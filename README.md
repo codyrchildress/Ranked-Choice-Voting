@@ -1,10 +1,10 @@
 # Runoff — ranked-choice voting
 
-A small, self-hosted web app for holding **instant-runoff (ranked-choice) elections** with a team, club, or friend group.
+A small, self-hosted web app for holding **points-scored ranked elections** with a team, club, or friend group.
 
 - **Create an election** — add the options and choose how many ranked choices each voter gets (top 3, top 5, …).
 - **Share one link** — anyone with the voter link casts one ballot. No accounts, no sign-ins.
-- **Results stay sealed** until the organizer closes voting; then the full round-by-round count goes public.
+- **Results stay sealed** until the organizer closes voting; then the full points standings go public.
 
 Elections are unlisted (random URLs) and each one is managed through a private **admin link** generated at creation time — there are no user accounts to run.
 
@@ -19,22 +19,17 @@ npm start          # http://localhost:3000
 
 `npm run dev` restarts on file changes. `npm test` runs the tabulation and API test suites.
 
-## How a vote is counted
+## How votes are counted
 
-Runoff uses single-winner **instant-runoff voting (IRV)**:
+Runoff uses a **points system** (a [Borda count](https://en.wikipedia.org/wiki/Borda_count)):
 
-1. Every ballot counts for its highest-ranked option still in the race.
-2. If an option holds a **majority of active ballots** (more than half), it wins.
-3. Otherwise the last-place option is eliminated and its ballots transfer to each voter's next surviving choice. Repeat.
+1. On a ballot with K ranked choices, a voter's 1st choice earns **K points**, their 2nd **K−1**, and so on down to 1 point for their Kth choice. In a top-5 election: 1st = 5 pts, 2nd = 4 pts, … 5th = 1 pt.
+2. Options a voter leaves unranked earn nothing from that ballot. Ranking fewer than K options never dilutes a ballot — the 1st choice is always worth K points.
+3. Totals decide the standings, so results show a clear full running order — 1st, 2nd, 3rd — not just a winner, with each option's bar broken down by which ranks its points came from.
 
-Details, all covered by tests in [test/tabulate.test.js](test/tabulate.test.js):
+Ties on total points break by placements: more 1st-choice votes wins, then more 2nd-choice votes, and so on. Only options with completely identical profiles truly tie, and that is reported outright. The count is fully deterministic.
 
-- **Exhausted ballots** — if every option a voter ranked has been eliminated, their ballot sits out the remaining rounds; majorities are computed over ballots still active.
-- **Zero-vote options** are eliminated together in one round (they have no ballots to transfer).
-- **Elimination ties** break by comparing earlier-round totals (most recent first); a tie across all rounds is broken by a random draw **seeded from the election id**, so recounts are deterministic.
-- An exact tie between the final options is reported as a tie.
-
-The whole algorithm lives in [server/tabulate.js](server/tabulate.js) and results are recomputed from the stored ballots on demand.
+The whole algorithm lives in [server/tabulate.js](server/tabulate.js) (covered by [test/tabulate.test.js](test/tabulate.test.js)) and results are recomputed from the stored ballots on demand.
 
 ## Election lifecycle
 
@@ -110,7 +105,7 @@ All endpoints are JSON under `/api`. The interesting ones:
 | `POST /api/elections` | Create (`{title, description?, numRanks, candidates[]}`) → returns the one-time `adminToken` |
 | `GET /api/elections/:id` | Public election info + your voted status |
 | `POST /api/elections/:id/ballots` | Cast `{rankings: [candidateId…], voterName?}` (only while open) |
-| `GET /api/elections/:id/results` | Full rounds/transfers/winners — `403` until the election closes |
+| `GET /api/elections/:id/results` | Full points standings and winners — `403` until the election closes |
 | `GET /api/admin/:token` | Everything, including the live tally and voter roster |
 | `POST /api/admin/:token/status` | `{status: "open" \| "closed" \| "draft"}` transitions |
 | `PATCH /api/admin/:token` | Edit title/description (anytime) and numRanks (setup only) |
@@ -131,7 +126,7 @@ server/
   db-local.js   node:sqlite driver (dev, tests, Docker, VPS)
   db-turso.js   hosted libSQL driver (Vercel)
   schema.js     shared table definitions
-  tabulate.js   the instant-runoff engine (pure function)
+  tabulate.js   the points-tally engine (pure function)
   ids.js        short ids, admin tokens, hashing
 api/index.js    Vercel serverless entry (same Express app)
 vercel.json     Vercel routing + security headers

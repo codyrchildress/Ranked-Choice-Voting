@@ -159,7 +159,7 @@ test('election lifecycle', async (t) => {
       { rankings: [Tacos, Pizza] },
       { rankings: [Sushi] },
       { rankings: [Sushi, Tacos], voterName: 'Cody' },
-      { rankings: [Pizza, Sushi] },
+      { rankings: [Pizza, Sushi, Tacos] },
     ];
     for (const body of ballots) {
       const res = await request(`/api/elections/${electionId}/ballots`, { method: 'POST', body });
@@ -194,7 +194,7 @@ test('election lifecycle', async (t) => {
     const res = await request(`/api/admin/${admin}`);
     assert.equal(res.status, 200);
     assert.equal(res.data.ballotCount, 5);
-    assert.deepEqual(res.data.results.winners, [candidatesByName.Sushi]);
+    assert.deepEqual(res.data.results.winners, [candidatesByName.Tacos]);
     assert.equal(res.data.voters.length, 5);
     assert.ok(res.data.voters.some((v) => v.name === 'Cody'));
   });
@@ -223,9 +223,14 @@ test('election lifecycle', async (t) => {
 
     const results = await request(`/api/elections/${electionId}/results`);
     assert.equal(results.status, 200);
-    // Round 1: Tacos 2, Sushi 2, Pizza 1 -> Pizza out, transfers to Sushi.
-    assert.deepEqual(results.data.winners, [candidatesByName.Sushi]);
-    assert.equal(results.data.rounds.length, 2);
+    // Points (top 3): Tacos 3+3+2+1 = 9, Sushi 3+3+2 = 8, Pizza 3+2 = 5.
+    assert.deepEqual(results.data.winners, [candidatesByName.Tacos]);
+    assert.deepEqual(
+      results.data.standings.map((s) => s.id),
+      [candidatesByName.Tacos, candidatesByName.Sushi, candidatesByName.Pizza],
+    );
+    assert.equal(results.data.standings[0].points, 9);
+    assert.equal(results.data.numRanks, 3);
     assert.equal(results.data.totalBallots, 5);
   });
 

@@ -1,7 +1,7 @@
 import express from 'express';
 import { adminToken, sha256 } from './ids.js';
 import { createStore } from './store.js';
-import { tabulate } from './tabulate.js';
+import { tallyPoints } from './tabulate.js';
 
 const LIMITS = {
   title: 120,
@@ -42,7 +42,7 @@ export function createApiRouter({ db, rateLimits = {} }) {
     const ballots = await store.listBallotRankings(election.id);
     if (ballots.length === 0) return null;
     const candidates = await store.listCandidates(election.id);
-    return tabulate(candidates.map((c) => c.id), ballots, { seed: election.id });
+    return tallyPoints(candidates.map((c) => c.id), ballots, election.numRanks);
   }
 
   // ---- elections ----
@@ -110,7 +110,7 @@ export function createApiRouter({ db, rateLimits = {} }) {
     res.json({
       election: publicElection(election),
       candidates,
-      ...tabulate(candidates.map((c) => c.id), ballots, { seed: election.id }),
+      ...tallyPoints(candidates.map((c) => c.id), ballots, election.numRanks),
     });
   });
 

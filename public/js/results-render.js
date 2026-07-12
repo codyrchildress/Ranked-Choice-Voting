@@ -1,42 +1,44 @@
-// Renders instant-runoff results: winner banner + round-by-round tally sheet.
+// Renders points-tally results: winner banner + a standings leaderboard.
+// Each bar is stacked by rank tier (darkest segment = points from 1st-choice
+// votes) so it's visible where every option's total comes from.
 // Used by the public results page and the admin live tally.
 
-import { el, pct, plural } from './util.js';
+import { el, ordinal, plural } from './util.js';
 
 export function renderResults(data, { live = false } = {}) {
   const names = new Map(data.candidates.map((c) => [c.id, c.name]));
-  const finalRound = data.rounds[data.rounds.length - 1];
   const frag = document.createDocumentFragment();
 
-  frag.append(renderBanner(data, names, finalRound, live));
-
-  const rounds = el('div', { class: 'rounds' });
-  for (const round of data.rounds) {
-    rounds.append(renderRound(round, names, data.rounds.length, live));
-  }
-  frag.append(rounds);
-
+  frag.append(renderBanner(data, names, live));
+  frag.append(renderStandings(data, names, live));
   frag.append(
-    el('p', {
-      class: 'results-foot',
-      text: `${plural(data.totalBallots, 'ballot')} cast · ${plural(data.rounds.length, 'round')} · a majority is more than half of the ballots still active in a round`,
-    }),
+    el('p', { class: 'results-foot', text: `${plural(data.totalBallots, 'ballot')} cast · ${scoringNote(data.numRanks)} Darker bar segments are points from higher choices.` }),
   );
   return frag;
 }
 
-function renderBanner(data, names, finalRound, live) {
+function scoringNote(numRanks) {
+  if (numRanks === 1) return 'Scoring: each ballot gives its choice 1 point.';
+  if (numRanks === 2) return 'Scoring: 1st choice = 2 pts, 2nd = 1 pt; unranked options score 0.';
+  return `Scoring: 1st choice = ${numRanks} pts, 2nd = ${numRanks - 1} pts, … ${ordinal(numRanks)} = 1 pt; unranked options score 0.`;
+}
+
+function renderBanner(data, names, live) {
+  const top = data.standings[0];
+
   if (data.winners.length === 1) {
-    const id = data.winners[0];
-    const votes = finalRound.tallies[id] ?? 0;
+    const runnerUp = data.standings[1];
+    const margin = runnerUp
+      ? ` · ${top.points - runnerUp.points} ${top.points - runnerUp.points === 1 ? 'point' : 'points'} clear of ${names.get(runnerUp.id) ?? '—'}`
+      : '';
     return el(
       'section',
       { class: 'winner-banner card' },
       el('span', { class: 'stamp big elected', text: live ? 'Leading' : 'Elected' }),
-      el('div', { class: 'winner-name', text: names.get(id) ?? '—' }),
+      el('div', { class: 'winner-name', text: names.get(top.id) ?? '—' }),
       el('p', {
         class: 'winner-sub',
-        text: `${votes} of ${finalRound.active} final-round votes (${pct(votes, finalRound.active)}) after ${plural(data.rounds.length, 'round')}`,
+        text: `${top.points} points from ${plural(data.totalBallots, 'ballot')}${margin}`,
       }),
     );
   }
@@ -52,7 +54,7 @@ function renderBanner(data, names, finalRound, live) {
       }),
       el('p', {
         class: 'winner-sub',
-        text: `Tied at ${finalRound.tallies[data.winners[0]] ?? 0} votes in the final round — settle it over coffee, or run a tiebreaker election.`,
+        text: `Dead even at ${top.points} points with identical placements — settle it over coffee, or run a tiebreaker election.`,
       }),
     );
   }
@@ -62,94 +64,78 @@ function renderBanner(data, names, finalRound, live) {
     { class: 'winner-banner card tie' },
     el('span', { class: 'stamp big tie-stamp', text: 'No result' }),
     el('div', { class: 'winner-name', text: '—' }),
-    el('p', { class: 'winner-sub', text: 'No ballots ranked any option, so there is nothing to count.' }),
+    el('p', { class: 'winner-sub', text: 'No ballots were cast, so there is nothing to count.' }),
   );
 }
 
-function renderRound(round, names, totalRounds, live) {
-  const entries = Object.entries(round.tallies).sort(
-    (a, b) => b[1] - a[1] || (names.get(a[0]) ?? '').localeCompare(names.get(b[0]) ?? ''),
-  );
+function renderStandings(data, names, live) {
+  const { standings, numRanks, totalBallots } = data;
+  const topPoints = standings[0]?.points ?? 0;
+  const scale = (points) => (topPoints > 0 ? (points / topPoints) * 100 : 0);
 
-  const rows = entries.map(([id, votes]) => {
-    const won = round.winners.includes(id);
-    const out = round.eliminated.includes(id);
-    const width = round.active > 0 ? (votes / round.active) * 100 : 0;
-    const transfer = round.transfers.find((t) => t.from === id);
+  let place = 0;
+  const rows = standings.map((entry, index) => {
+    // Candidates with identical profiles share a place number.
+    if (index === 0 || !sameProfile(entry, standings[index - 1])) place = index + 1;
+    const won = data.winners.includes(entry.id);
+
+    const segments = entry.rankCounts
+      .map((count, r) => ({ r, count, points: count * (numRanks - r) }))
+      .filter((seg) => seg.points > 0);
 
     const bar = el(
       'div',
-      { class: `bar${won ? ' won' : ''}${out ? ' out' : ''}` },
-      el('i', { dataset: { w: `${width}%` } }),
-    );
-    if (round.majority && round.active > 0) {
-      bar.append(
-        el('span', {
-          class: 'majority-mark',
-          style: `left:${(round.majority / round.active) * 100}%`,
-          title: `Majority: ${round.majority} votes`,
+      { class: `bar stacked${won ? ' won' : ''}` },
+      segments.map(({ r, count, points }) =>
+        el('i', {
+          dataset: { w: `${scale(points)}%` },
+          style: `opacity:${tierOpacity(r, numRanks)}`,
+          title: `${ordinal(r + 1)}-choice points: ${count} × ${numRanks - r} = ${points}`,
         }),
-      );
-    }
+      ),
+    );
+
+    const breakdown =
+      entry.points === 0
+        ? 'not ranked on any ballot'
+        : `${segments.map(({ r, count }) => `${count}× ${ordinal(r + 1)}`).join(' · ')} · ranked by ${entry.ballotsRanking} of ${plural(totalBallots, 'voter')}`;
 
     return el(
       'div',
-      { class: 'tally-row' },
+      { class: `standing-row${won ? ' won' : ''}` },
+      el('span', { class: 'rank-badge', 'aria-hidden': 'true', text: String(place) }),
       el(
         'div',
-        { class: 'tally-line' },
+        { class: 'standing-main' },
         el(
-          'span',
-          { class: 'name' },
-          names.get(id) ?? '—',
-          won && el('span', { class: 'tag won', text: live ? 'leading' : '✓ elected' }),
-          out && el('span', { class: 'tag out', text: 'eliminated' }),
+          'div',
+          { class: 'tally-line' },
+          el(
+            'span',
+            { class: 'name' },
+            names.get(entry.id) ?? '—',
+            won && el('span', { class: 'tag won', text: live ? 'leading' : '✓ elected' }),
+          ),
+          el('span', { class: 'leader-dots' }),
+          el('span', { class: 'figures' }, String(entry.points), el('span', { class: 'pct', text: 'pts' })),
         ),
-        el('span', { class: 'leader-dots' }),
-        el(
-          'span',
-          { class: 'figures' },
-          String(votes),
-          el('span', { class: 'pct', text: pct(votes, round.active) }),
-        ),
+        bar,
+        el('p', { class: 'standing-breakdown', text: breakdown }),
       ),
-      bar,
-      transfer && el('p', { class: 'transfer-note', text: transferText(transfer, names) }),
     );
   });
 
-  const meta = round.active > 0
-    ? `${round.active} active · majority ≥ ${round.majority}`
-    : 'no active ballots';
-
-  return el(
-    'section',
-    { class: 'card round-card' },
-    el(
-      'div',
-      { class: 'round-head' },
-      el('h3', { text: totalRounds === 1 ? 'The count' : `Round ${round.number}` }),
-      el('span', { class: 'round-meta mono', text: meta }),
-      round.tieBreak === 'prior-round' &&
-        el('span', { class: 'tie-note', text: 'Last place was tied — broken by earlier-round totals.' }),
-      round.tieBreak === 'random' &&
-        el('span', { class: 'tie-note', text: 'Last place was tied in every round — broken by a seeded random draw.' }),
-    ),
-    el('div', { class: 'tally-rows' }, rows),
-    round.exhausted > 0 &&
-      el('p', {
-        class: 'exhausted-note',
-        text: `${plural(round.exhausted, 'exhausted ballot')} — every option they ranked has been eliminated`,
-      }),
-  );
+  return el('section', { class: 'card standings-card' }, el('div', { class: 'standings' }, rows));
 }
 
-function transferText(transfer, names) {
-  const parts = Object.entries(transfer.to)
-    .sort((a, b) => b[1] - a[1])
-    .map(([id, n]) => `${names.get(id) ?? '—'} +${n}`);
-  if (transfer.exhausted > 0) parts.push(`${transfer.exhausted} exhausted`);
-  return `${plural(transfer.count, 'ballot')} moved → ${parts.join(' · ')}`;
+function sameProfile(a, b) {
+  return a.points === b.points && a.rankCounts.every((count, r) => count === b.rankCounts[r]);
+}
+
+// Solid ink for 1st-choice points, fading for lower tiers (floor keeps the
+// lightest tier readable).
+function tierOpacity(rank, numRanks) {
+  return (1 - rank * (0.72 / Math.max(numRanks - 1, 1))).toFixed(3);
 }
 
 // Kick off the grow-in animation once rendered bars are in the document.

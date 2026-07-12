@@ -142,7 +142,7 @@ function renderBallot() {
           text:
             max === 1
               ? 'Pick your one choice by tapping it below.'
-              : `Rank up to ${max} of the ${candidates.length} options. Tap an option to add it to your ranking; drag or use the arrows to reorder.`,
+              : `Rank up to ${max} of the ${candidates.length} options — your 1st choice earns ${max} points, your 2nd ${max - 1}, and so on. Tap an option to add it; drag or use the arrows to reorder.`,
         }),
         slots,
         unranked.length > 0
