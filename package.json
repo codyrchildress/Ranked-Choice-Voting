@@ -1,0 +1,19 @@
+{
+  "name": "runoff",
+  "version": "0.1.0",
+  "description": "Self-hosted ranked-choice (instant-runoff) voting for groups",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --test --disable-warning=ExperimentalWarning \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "express": "^5.1.0"
+  }
+}

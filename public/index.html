@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Runoff — ranked-choice voting</title>
+  <meta name="description" content="Hold instant-runoff elections with your team, club, or friends. Rank the options, share a link, and reveal the results when voting closes." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:ital,wght@0,400..800;1,400..800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <header class="masthead wrap">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.6" y="9.9" width="18.8" height="10.3" rx="1.6" stroke="currentColor" stroke-width="1.9"/>
+        <path d="M8.1 9.6V5.2c0-.6.5-1.1 1.1-1.1h5.6c.6 0 1.1.5 1.1 1.1v4.4" stroke="currentColor" stroke-width="1.9"/>
+        <path d="M10 6.5l1.5 1.5 2.6-2.8" stroke="#bf3b21" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M7.6 13.6h8.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      </svg>
+      Runoff</a>
+    <span class="masthead-note">ranked-choice voting</span>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-copy rise" style="--i:0">
+        <h1>Second choices <em>count.</em></h1>
+        <p class="lede">
+          Runoff holds instant-runoff elections for your team, club, or friend group.
+          Everyone ranks their favorites; the option in last place is eliminated round by
+          round until one earns a real majority.
+        </p>
+        <ol class="hero-steps">
+          <li>
+            <span class="rank-badge" aria-hidden="true">1</span>
+            <div>
+              <strong>Set up the ballot</strong>
+              <span>Name the election, add the options, and choose how many ranked choices each voter gets.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rank-badge" aria-hidden="true">2</span>
+            <div>
+              <strong>Share one link</strong>
+              <span>Anyone with the voter link casts one ballot — no accounts, no sign-ins.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rank-badge" aria-hidden="true">3</span>
+            <div>
+              <strong>Close to reveal</strong>
+              <span>Tallies stay sealed until you close voting. Then everyone sees the full round-by-round count.</span>
+            </div>
+          </li>
+        </ol>
+      </div>
+
+      <form class="card create-card rise" id="create-form" style="--i:1" novalidate>
+        <h2>Start an election</h2>
+        <div class="form-section" style="border-top:0; padding-top:0; margin-top:0;">
+          <span class="legend">01 · The question</span>
+          <label class="field">
+            <span>Title</span>
+            <input type="text" name="title" maxlength="120" placeholder="Where should we eat on Friday?" required />
+          </label>
+          <label class="field">
+            <span>Description <small class="muted">(optional)</small></span>
+            <textarea name="description" maxlength="2000" placeholder="Any context voters should know."></textarea>
+          </label>
+        </div>
+        <div class="form-section">
+          <span class="legend">02 · The options</span>
+          <div class="option-rows" id="option-rows"></div>
+          <button type="button" class="btn ghost small" id="add-option">+ Add option</button>
+        </div>
+        <div class="form-section">
+          <span class="legend">03 · The ballot</span>
+          <label class="field">
+            <span>Ranked choices per voter</span>
+            <select id="num-ranks" name="numRanks"></select>
+            <span class="hint">Voters rank up to this many options. If it exceeds the number of options, it’s capped when voting opens.</span>
+          </label>
+          <button type="submit" class="btn accent" style="width:100%">Create election</button>
+          <span class="hint" style="display:block; text-align:center; margin-top:0.6rem;">You’ll get a private admin link — no account needed.</span>
+        </div>
+      </form>
+    </section>
+
+    <section class="section" id="mine-section" hidden>
+      <p class="kicker">Your elections</p>
+      <div class="mine-grid" id="mine-grid"></div>
+    </section>
+
+    <section class="section" id="how">
+      <p class="kicker">How instant runoff works</p>
+      <div class="explain-grid">
+        <div class="card">
+          <h3><span class="rank-badge" aria-hidden="true">1</span> Everyone ranks</h3>
+          <p>Voters order their favorites instead of picking just one — first choice, second choice, and so on.</p>
+        </div>
+        <div class="card">
+          <h3><span class="rank-badge" aria-hidden="true">2</span> Last place drops</h3>
+          <p>First choices are counted. If nothing has a majority, the last-place option is eliminated and its ballots move to their next pick.</p>
+        </div>
+        <div class="card">
+          <h3><span class="rank-badge" aria-hidden="true">3</span> Majority wins</h3>
+          <p>Rounds repeat until one option holds more than half of the active ballots — a winner most voters actually support.</p>
+        </div>
+        <div class="card">
+          <h3><span class="rank-badge" aria-hidden="true">✓</span> Sealed until you say</h3>
+          <p>Nobody sees the tallies while voting runs. The organizer closes the election, and the full count goes public.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-foot wrap">
+    <span>Runoff — open-source instant-runoff voting</span>
+    <a href="https://github.com/codyrchildress/Ranked-Choice-Voting" rel="noopener">Source on GitHub</a>
+  </footer>
+
+  <script type="module" src="/js/home.js"></script>
+</body>
+</html>
