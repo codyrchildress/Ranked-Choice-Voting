@@ -1,7 +1,7 @@
 import express from 'express';
 import { adminToken, sha256 } from './ids.js';
 import { createStore } from './store.js';
-import { tallyPoints } from './tabulate.js';
+import { METHOD_KEYS, tallyAll } from './tabulate.js';
 
 const LIMITS = {
   title: 120,
@@ -10,6 +10,7 @@ const LIMITS = {
   voterName: 80,
   maxCandidates: 50,
   maxRanks: 20,
+  maxWinners: 20,
 };
 
 export function createApiRouter({ db, rateLimits = {} }) {
@@ -42,7 +43,11 @@ export function createApiRouter({ db, rateLimits = {} }) {
     const ballots = await store.listBallotRankings(election.id);
     if (ballots.length === 0) return null;
     const candidates = await store.listCandidates(election.id);
-    return tallyPoints(candidates.map((c) => c.id), ballots, election.numRanks);
+    return tallyAll(candidates.map((c) => c.id), ballots, {
+      numRanks: election.numRanks,
+      numWinners: election.numWinners,
+      seed: election.id,
+    });
   }
 
   // ---- elections ----
@@ -66,6 +71,16 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(400).json({ error: `Ranked choices per voter must be a whole number from 1 to ${LIMITS.maxRanks}.` });
     }
 
+    const method = body.method === undefined ? 'borda' : body.method;
+    if (!METHOD_KEYS.includes(method)) {
+      return res.status(400).json({ error: 'Unknown counting method.' });
+    }
+
+    const numWinners = body.numWinners === undefined ? 1 : body.numWinners;
+    if (!Number.isInteger(numWinners) || numWinners < 1 || numWinners > LIMITS.maxWinners) {
+      return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
+    }
+
     const names = (Array.isArray(body.candidates) ? body.candidates : []).map(cleanLine).filter(Boolean);
     const problem = candidateListProblem(names);
     if (problem) return res.status(400).json({ error: problem });
@@ -75,6 +90,8 @@ export function createApiRouter({ db, rateLimits = {} }) {
       title,
       description,
       numRanks,
+      method,
+      numWinners: method === 'stv' ? numWinners : 1,
       candidateNames: names,
       adminTokenHash: sha256(token),
     });
@@ -110,7 +127,13 @@ export function createApiRouter({ db, rateLimits = {} }) {
     res.json({
       election: publicElection(election),
       candidates,
-      ...tallyPoints(candidates.map((c) => c.id), ballots, election.numRanks),
+      totalBallots: ballots.length,
+      official: election.method,
+      results: tallyAll(candidates.map((c) => c.id), ballots, {
+        numRanks: election.numRanks,
+        numWinners: election.numWinners,
+        seed: election.id,
+      }),
     });
   });
 
@@ -195,6 +218,24 @@ export function createApiRouter({ db, rateLimits = {} }) {
       }
       election.numRanks = body.numRanks;
     }
+    if (body.method !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!METHOD_KEYS.includes(body.method)) {
+        return res.status(400).json({ error: 'Unknown counting method.' });
+      }
+      election.method = body.method;
+    }
+    if (body.numWinners !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!Number.isInteger(body.numWinners) || body.numWinners < 1 || body.numWinners > LIMITS.maxWinners) {
+        return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
+      }
+      election.numWinners = body.numWinners;
+    }
 
     await store.saveElection(election);
     res.json({ election: publicElection(election) });
@@ -214,8 +255,13 @@ export function createApiRouter({ db, rateLimits = {} }) {
       if (candidates.length < 2) {
         return res.status(409).json({ error: 'Add at least two options before opening voting.' });
       }
-      // A voter can never rank more options than exist.
+      // A voter can never rank more options than exist, and STV needs at
+      // least one non-winner; other methods elect exactly one.
       election.numRanks = Math.min(election.numRanks, candidates.length);
+      election.numWinners =
+        election.method === 'stv'
+          ? Math.min(election.numWinners, Math.max(1, candidates.length - 1))
+          : 1;
       election.status = 'open';
       election.openedAt = election.openedAt ?? now;
       election.closedAt = null;

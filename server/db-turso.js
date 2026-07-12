@@ -2,7 +2,7 @@
 // has no native dependencies, which keeps serverless bundles small. The
 // schema is ensured once per process, on first use.
 import { createClient } from '@libsql/client/web';
-import { SCHEMA_STATEMENTS } from './schema.js';
+import { isDuplicateColumnError, MIGRATION_STATEMENTS, SCHEMA_STATEMENTS } from './schema.js';
 
 export function createTursoDb({
   url = process.env.TURSO_DATABASE_URL,
@@ -12,8 +12,18 @@ export function createTursoDb({
   const client = createClient({ url, authToken });
 
   let ready = null;
+  const applySchema = async () => {
+    await client.batch(SCHEMA_STATEMENTS, 'write');
+    for (const sql of MIGRATION_STATEMENTS) {
+      try {
+        await client.execute(sql);
+      } catch (err) {
+        if (!isDuplicateColumnError(err)) throw err;
+      }
+    }
+  };
   const ensureSchema = () => {
-    ready ??= client.batch(SCHEMA_STATEMENTS, 'write').catch((err) => {
+    ready ??= applySchema().catch((err) => {
       ready = null; // let the next request retry instead of caching the failure
       throw err;
     });

@@ -1,10 +1,10 @@
 # Runoff — ranked-choice voting
 
-A small, self-hosted web app for holding **points-scored ranked elections** with a team, club, or friend group.
+A small, self-hosted web app for holding **ranked elections** with a team, club, or friend group — counted by your choice of five methods.
 
-- **Create an election** — add the options and choose how many ranked choices each voter gets (top 3, top 5, …).
+- **Create an election** — add the options, pick the counting method (instant-runoff, STV, Borda, Condorcet, or contingent), and choose how many ranked choices each voter gets (top 3, top 5, …).
 - **Share one link** — anyone with the voter link casts one ballot. No accounts, no sign-ins.
-- **Results stay sealed** until the organizer closes voting; then the full points standings go public.
+- **Results stay sealed** until the organizer closes voting; then the official count goes public — along with a "what if?" view recounting the same ballots under every other method, just for fun.
 
 Elections are unlisted (random URLs) and each one is managed through a private **admin link** generated at creation time — there are no user accounts to run.
 
@@ -19,27 +19,35 @@ npm start          # http://localhost:3000
 
 `npm run dev` restarts on file changes. `npm test` runs the tabulation and API test suites.
 
-## How votes are counted
+## The five counting methods
 
-Runoff uses a **points system** (a [Borda count](https://en.wikipedia.org/wiki/Borda_count)):
+Every ballot is the same — a ranking of up to K options — so the admin's chosen method decides how those rankings become a result, and the results page can recount the same ballots under all five:
 
-1. On a ballot with K ranked choices, a voter's 1st choice earns **K points**, their 2nd **K−1**, and so on down to 1 point for their Kth choice. In a top-5 election: 1st = 5 pts, 2nd = 4 pts, … 5th = 1 pt.
-2. Options a voter leaves unranked earn nothing from that ballot. Ranking fewer than K options never dilutes a ballot — the 1st choice is always worth K points.
-3. Totals decide the standings, so results show a clear full running order — 1st, 2nd, 3rd — not just a winner, with each option's bar broken down by which ranks its points came from.
+| Method | In one line |
+|---|---|
+| **Instant-Runoff (IRV)** | Count 1st choices; repeatedly eliminate last place and transfer those ballots to their next surviving pick, until someone holds a majority of the still-active ballots. |
+| **Single Transferable Vote (STV)** | Multi-winner IRV: the admin picks how many seats to fill. Options reaching the [Droop quota](https://en.wikipedia.org/wiki/Droop_quota) are elected and their **surplus** transfers onward at fractional weight (Gregory method), so few votes are wasted. |
+| **Borda Count** | Every rank earns points (1st = K, 2nd = K−1, … unranked = 0). Highest total wins; rewards broad appeal and yields a full running order. |
+| **Condorcet** | Every pair of options goes head-to-head; a winner must beat all rivals one-on-one. Paradox cycles fall back to the best win–loss record (Copeland's rule), then total vote margin. |
+| **Contingent Vote** | If no option takes a majority of 1st choices, all but the top two are eliminated at once and every ballot backs whichever finalist it ranks higher. |
 
-Ties on total points break by placements: more 1st-choice votes wins, then more 2nd-choice votes, and so on. Only options with completely identical profiles truly tie, and that is reported outright. The count is fully deterministic.
+Shared rules, all deterministic:
 
-The whole algorithm lives in [server/tabulate.js](server/tabulate.js) (covered by [test/tabulate.test.js](test/tabulate.test.js)) and results are recomputed from the stored ballots on demand.
+- **Elimination and finalist ties** break by earlier-round totals where they exist, then a random draw **seeded from the election id** — so recounting always gives the same answer.
+- **Exhausted ballots** (every ranked option eliminated) sit out the remaining rounds; majorities are computed over ballots still active.
+- Exact unresolved ties are reported as ties rather than silently broken.
+
+The engines live in [server/methods/](server/methods/) (one file per method, each covered by its own test suite in [test/](test/)) and results are recomputed from the stored ballots on demand — changing nothing about how ballots are cast or stored.
 
 ## Election lifecycle
 
 | Status | Voters see | Admin can |
 |---|---|---|
-| **In setup** | "Not open yet" | Edit title/description, add/remove options, change ranks per voter |
-| **Voting open** | The ballot | Watch a private live tally, close voting, or return to setup while no ballots exist |
+| **In setup** | "Not open yet" | Edit title/description, add/remove options, change the counting method, seats (STV), and ranks per voter |
+| **Voting open** | The ballot | Watch a private live tally (all five methods), close voting, or return to setup while no ballots exist |
 | **Closed** | Results | Reopen voting (seals results again), delete the election |
 
-Ranks per voter are clamped to the number of options when voting opens. Options are locked while voting is open so every ballot refers to the same candidate set.
+Ranks per voter are clamped to the number of options when voting opens, and STV seats are clamped below the option count. Options and counting rules are locked while voting is open so every ballot is cast under the same rules.
 
 ## Configuration
 
@@ -102,13 +110,13 @@ All endpoints are JSON under `/api`. The interesting ones:
 
 | Method & path | What it does |
 |---|---|
-| `POST /api/elections` | Create (`{title, description?, numRanks, candidates[]}`) → returns the one-time `adminToken` |
+| `POST /api/elections` | Create (`{title, description?, numRanks, method?, numWinners?, candidates[]}`) → returns the one-time `adminToken` |
 | `GET /api/elections/:id` | Public election info + your voted status |
 | `POST /api/elections/:id/ballots` | Cast `{rankings: [candidateId…], voterName?}` (only while open) |
-| `GET /api/elections/:id/results` | Full points standings and winners — `403` until the election closes |
+| `GET /api/elections/:id/results` | The official result plus recounts under all five methods — `403` until the election closes |
 | `GET /api/admin/:token` | Everything, including the live tally and voter roster |
 | `POST /api/admin/:token/status` | `{status: "open" \| "closed" \| "draft"}` transitions |
-| `PATCH /api/admin/:token` | Edit title/description (anytime) and numRanks (setup only) |
+| `PATCH /api/admin/:token` | Edit title/description (anytime); numRanks, method, numWinners (setup only) |
 | `POST /api/admin/:token/candidates` · `DELETE …/candidates/:cid` | Edit options (setup only) |
 | `DELETE /api/admin/:token` | Delete the election and all its ballots |
 
@@ -125,8 +133,10 @@ server/
   db.js         driver chooser (local file vs Turso)
   db-local.js   node:sqlite driver (dev, tests, Docker, VPS)
   db-turso.js   hosted libSQL driver (Vercel)
-  schema.js     shared table definitions
-  tabulate.js   the points-tally engine (pure function)
+  schema.js     shared table definitions + additive migrations
+  tabulate.js   tally registry: runs every counting method
+  methods/      one pure engine per method (irv, stv, borda,
+                condorcet, contingent) + shared tiebreak helpers
   ids.js        short ids, admin tokens, hashing
 api/index.js    Vercel serverless entry (same Express app)
 vercel.json     Vercel routing + security headers

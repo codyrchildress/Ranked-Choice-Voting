@@ -7,6 +7,8 @@ export const SCHEMA_STATEMENTS = [
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     num_ranks INTEGER NOT NULL,
+    method TEXT NOT NULL DEFAULT 'borda',
+    num_winners INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'open', 'closed')),
     created_at INTEGER NOT NULL,
     opened_at INTEGER,
@@ -28,3 +30,15 @@ export const SCHEMA_STATEMENTS = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_ballots_election ON ballots(election_id, created_at)',
 ];
+
+// Additive migrations for databases created before these columns existed.
+// Drivers run them on startup and ignore "duplicate column" errors, so both
+// fresh and existing databases converge on the same shape.
+export const MIGRATION_STATEMENTS = [
+  "ALTER TABLE elections ADD COLUMN method TEXT NOT NULL DEFAULT 'borda'",
+  'ALTER TABLE elections ADD COLUMN num_winners INTEGER NOT NULL DEFAULT 1',
+];
+
+export function isDuplicateColumnError(err) {
+  return /duplicate column/i.test(String(err?.message ?? err));
+}

@@ -1,3 +1,4 @@
+import { methodByKey } from './methods.js';
 import { api, el, ordinal, plural, statusStamp, storage, toast } from './util.js';
 
 const electionId = location.pathname.split('/')[2];
@@ -68,13 +69,18 @@ function schedulePoll() {
 
 function renderHead() {
   const { election, ballotCount } = data;
+  const methodName = methodByKey[election.method]?.name ?? election.method;
+  const seats = election.method === 'stv' ? ` · electing ${election.numWinners}` : '';
   app.append(
     el(
       'div',
       { class: 'page-head rise' },
       el('div', {}, el('h1', { text: election.title }), statusStamp(election.status)),
       election.description && el('p', { class: 'desc', text: election.description }),
-      el('p', { class: 'count-line', text: `${plural(ballotCount, 'ballot')} cast so far` }),
+      el('p', {
+        class: 'count-line',
+        text: `Counted by ${methodName}${seats} · ${plural(ballotCount, 'ballot')} cast so far`,
+      }),
     ),
   );
 }
@@ -139,10 +145,11 @@ function renderBallot() {
         { class: 'ballot-body' },
         el('p', {
           class: 'ballot-instruction',
-          text:
+          text: `${
             max === 1
               ? 'Pick your one choice by tapping it below.'
-              : `Rank up to ${max} of the ${candidates.length} options — your 1st choice earns ${max} points, your 2nd ${max - 1}, and so on. Tap an option to add it; drag or use the arrows to reorder.`,
+              : `Rank up to ${max} of the ${candidates.length} options — tap to add, drag or use the arrows to reorder.`
+          } ${methodByKey[election.method]?.voterLine({ numRanks: max, numWinners: election.numWinners }) ?? ''}`,
         }),
         slots,
         unranked.length > 0

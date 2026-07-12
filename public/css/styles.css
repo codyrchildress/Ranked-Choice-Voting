@@ -497,6 +497,44 @@ textarea {
   display: block;
 }
 
+.method-options {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.method-option {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.7rem;
+  cursor: pointer;
+  background: var(--paper-raised);
+  transition: border-color 0.13s, background 0.13s, box-shadow 0.13s;
+}
+
+.method-option:has(input:checked) {
+  border-color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+
+.method-option input {
+  margin-top: 0.25rem;
+  accent-color: var(--accent);
+}
+
+.method-option strong {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.method-option span {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
 .option-rows {
   display: grid;
   gap: 0.55rem;
@@ -938,6 +976,11 @@ textarea {
   background: var(--win);
 }
 
+.tag.out {
+  color: var(--accent-deep);
+  border: 1px solid var(--accent);
+}
+
 .tally-line .leader-dots {
   flex: 1;
   border-bottom: 2px dotted var(--line-strong);
@@ -956,10 +999,10 @@ textarea {
   margin-left: 0.45rem;
 }
 
-/* stacked points bar: one segment per rank tier, darkest = 1st choices */
+/* bars: single fill for round-by-round views; .stacked splits the fill into
+   rank-tier segments (darkest = 1st choices) for the points view */
 .bar {
-  display: flex;
-  gap: 1px;
+  position: relative;
   height: 14px;
   background: var(--paper-sunken);
   border-radius: 0 4px 4px 0;
@@ -967,6 +1010,8 @@ textarea {
 }
 
 .bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
   width: var(--w, 0%);
   background: var(--ink);
   transition: width 0.7s var(--ease-out);
@@ -976,10 +1021,225 @@ textarea {
   background: var(--win);
 }
 
+.bar.out > i {
+  background: var(--ink-faint);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(246, 241, 231, 0.55) 0 3px,
+    transparent 3px 7px
+  );
+}
+
+.bar.stacked {
+  display: flex;
+  gap: 1px;
+}
+
+.bar.stacked > i {
+  position: static;
+  inset: auto;
+}
+
+.bar .majority-mark {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 0;
+  border-left: 2px dashed var(--accent);
+  opacity: 0.75;
+}
+
 .standing-breakdown {
   font-size: 0.8rem;
   color: var(--ink-faint);
   margin: 0.05rem 0 0;
+}
+
+/* ---- rounds (instant-runoff, STV, contingent) ---------------------- */
+
+.rounds {
+  display: grid;
+  gap: 1.3rem;
+  max-width: 760px;
+}
+
+.round-card {
+  padding: 1.3rem 1.5rem 1.45rem;
+}
+
+.round-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
+  margin-bottom: 1.1rem;
+}
+
+.round-head h3 {
+  font-size: 1.3rem;
+  margin: 0;
+}
+
+.round-head .round-meta {
+  margin-left: auto;
+  font: 500 0.75rem/1.5 var(--font-mono);
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.tie-note {
+  width: 100%;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.tally-rows {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.tally-row {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.transfer-note {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  margin: 0.15rem 0 0;
+}
+
+.exhausted-note {
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--ink-faint);
+  border-top: 1px dashed var(--line);
+  padding-top: 0.7rem;
+  margin: 0.85rem 0 0;
+}
+
+/* ---- method switcher & explainers ---------------------------------- */
+
+.method-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 760px;
+  margin-bottom: 1rem;
+}
+
+.method-chip {
+  appearance: none;
+  border: 1.5px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.5rem 0.9rem;
+  font: 600 0.82rem/1 var(--font-body);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: background 0.13s, color 0.13s, border-color 0.13s;
+}
+
+.method-chip:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.method-chip .official-mark {
+  font: 700 0.6rem/1 var(--font-body);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.method-chip.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.method-chip.active .official-mark {
+  color: var(--paper);
+  opacity: 0.75;
+}
+
+.method-blurb {
+  max-width: 760px;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  margin: 0 0 1.4rem;
+}
+
+.method-blurb .hypo-tag {
+  font: 700 0.62rem/1 var(--font-body);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem 0.2rem;
+  margin-right: 0.5rem;
+  white-space: nowrap;
+}
+
+.winner-banner.hypo {
+  background: var(--paper-raised);
+  border-color: var(--line-strong);
+  outline-color: var(--line-strong);
+  outline-style: dashed;
+}
+
+.stamp.hypo-stamp {
+  color: var(--ink-soft);
+  border-style: dashed;
+}
+
+/* ---- head-to-head matchup grid (Condorcet) -------------------------- */
+
+.matchup-scroll {
+  overflow-x: auto;
+}
+
+.matchup-table {
+  border-collapse: collapse;
+  font: 500 0.8rem/1.3 var(--font-mono);
+  min-width: 100%;
+}
+
+.matchup-table th,
+.matchup-table td {
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.6rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.matchup-table th {
+  font: 600 0.74rem/1.3 var(--font-body);
+  background: var(--paper-sunken);
+}
+
+.matchup-table th.rowhead {
+  text-align: left;
+}
+
+.matchup-table td.win {
+  background: var(--win-wash);
+  color: var(--win);
+  font-weight: 600;
+}
+
+.matchup-table td.loss {
+  background: var(--accent-wash);
+  color: var(--accent-deep);
+}
+
+.matchup-table td.even {
+  color: var(--ink-faint);
 }
 
 .results-foot {

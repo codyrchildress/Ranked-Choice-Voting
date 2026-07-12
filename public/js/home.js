@@ -1,9 +1,14 @@
+import { METHODS, methodByKey } from './methods.js';
 import { api, el, statusStamp, storage, toast } from './util.js';
 
 const form = document.getElementById('create-form');
 const optionRows = document.getElementById('option-rows');
 const addOptionBtn = document.getElementById('add-option');
 const ranksSelect = document.getElementById('num-ranks');
+const methodOptions = document.getElementById('method-options');
+const methodBlurb = document.getElementById('method-blurb');
+const seatsField = document.getElementById('seats-field');
+const seatsSelect = document.getElementById('num-winners');
 
 // ---- create form ----
 
@@ -11,7 +16,34 @@ for (let i = 1; i <= 10; i += 1) {
   ranksSelect.append(
     el('option', { value: String(i), selected: i === 3 }, i === 1 ? 'Just one choice' : `Top ${i}`),
   );
+  seatsSelect.append(el('option', { value: String(i), selected: i === 2 }, `Elect ${i}`));
 }
+
+let selectedMethod = 'irv';
+
+function onMethodChange(key) {
+  selectedMethod = key;
+  methodBlurb.textContent = methodByKey[key].explain;
+  seatsField.hidden = key !== 'stv';
+}
+
+for (const method of METHODS) {
+  methodOptions.append(
+    el(
+      'label',
+      { class: 'method-option' },
+      el('input', {
+        type: 'radio',
+        name: 'method',
+        value: method.key,
+        checked: method.key === selectedMethod,
+        onchange: () => onMethodChange(method.key),
+      }),
+      el('div', {}, el('strong', { text: method.name }), el('span', { text: method.tag })),
+    ),
+  );
+}
+onMethodChange(selectedMethod);
 
 function addOptionRow(placeholder = 'Add an option') {
   const input = el('input', { type: 'text', maxlength: '100', placeholder });
@@ -70,7 +102,14 @@ form.addEventListener('submit', async (event) => {
   try {
     const res = await api('/api/elections', {
       method: 'POST',
-      body: { title, description, numRanks: Number(ranksSelect.value), candidates },
+      body: {
+        title,
+        description,
+        numRanks: Number(ranksSelect.value),
+        method: selectedMethod,
+        numWinners: Number(seatsSelect.value),
+        candidates,
+      },
     });
     storage.saveMine({
       id: res.election.id,
@@ -133,3 +172,20 @@ async function renderMine() {
 }
 
 renderMine();
+
+// ---- method explainers ----
+
+const methodsGrid = document.getElementById('methods-grid');
+const sealedCard = document.getElementById('sealed-card');
+for (const method of METHODS) {
+  methodsGrid.insertBefore(
+    el(
+      'div',
+      { class: 'card' },
+      el('h3', {}, method.name),
+      el('p', { class: 'muted', style: 'font-size:0.8rem; margin:0 0 0.5rem;', text: method.tag }),
+      el('p', { text: method.explain }),
+    ),
+    sealedCard,
+  );
+}

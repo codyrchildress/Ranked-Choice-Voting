@@ -1,19 +1,19 @@
 import { shortId } from './ids.js';
 
-const INSERT_ELECTION = `INSERT INTO elections (id, admin_token_hash, title, description, num_ranks, status, created_at)
-   VALUES (?, ?, ?, ?, ?, 'draft', ?)`;
+const INSERT_ELECTION = `INSERT INTO elections (id, admin_token_hash, title, description, num_ranks, method, num_winners, status, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)`;
 const INSERT_CANDIDATE = 'INSERT INTO candidates (id, election_id, name, position) VALUES (?, ?, ?, ?)';
 
 export function createStore(db) {
   return {
-    async createElection({ title, description, numRanks, candidateNames, adminTokenHash }) {
+    async createElection({ title, description, numRanks, method, numWinners, candidateNames, adminTokenHash }) {
       for (let attempt = 0; ; attempt += 1) {
         const id = shortId(10);
         try {
           await db.batch([
             {
               sql: INSERT_ELECTION,
-              args: [id, adminTokenHash, title, description, numRanks, Date.now()],
+              args: [id, adminTokenHash, title, description, numRanks, method, numWinners, Date.now()],
             },
             ...candidateNames.map((name, i) => ({
               sql: INSERT_CANDIDATE,
@@ -40,9 +40,9 @@ export function createStore(db) {
 
     async saveElection(el) {
       await db.run(
-        `UPDATE elections SET title = ?, description = ?, num_ranks = ?, status = ?, opened_at = ?, closed_at = ?
+        `UPDATE elections SET title = ?, description = ?, num_ranks = ?, method = ?, num_winners = ?, status = ?, opened_at = ?, closed_at = ?
          WHERE id = ?`,
-        [el.title, el.description, el.numRanks, el.status, el.openedAt ?? null, el.closedAt ?? null, el.id],
+        [el.title, el.description, el.numRanks, el.method, el.numWinners, el.status, el.openedAt ?? null, el.closedAt ?? null, el.id],
       );
     },
 
@@ -120,6 +120,8 @@ function mapElection(row) {
     title: row.title,
     description: row.description,
     numRanks: row.num_ranks,
+    method: row.method,
+    numWinners: row.num_winners,
     status: row.status,
     createdAt: row.created_at,
     openedAt: row.opened_at,

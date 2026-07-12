@@ -194,7 +194,7 @@ test('election lifecycle', async (t) => {
     const res = await request(`/api/admin/${admin}`);
     assert.equal(res.status, 200);
     assert.equal(res.data.ballotCount, 5);
-    assert.deepEqual(res.data.results.winners, [candidatesByName.Tacos]);
+    assert.deepEqual(res.data.results.borda.winners, [candidatesByName.Tacos]);
     assert.equal(res.data.voters.length, 5);
     assert.ok(res.data.voters.some((v) => v.name === 'Cody'));
   });
@@ -223,14 +223,23 @@ test('election lifecycle', async (t) => {
 
     const results = await request(`/api/elections/${electionId}/results`);
     assert.equal(results.status, 200);
-    // Points (top 3): Tacos 3+3+2+1 = 9, Sushi 3+3+2 = 8, Pizza 3+2 = 5.
-    assert.deepEqual(results.data.winners, [candidatesByName.Tacos]);
+    assert.equal(results.data.official, 'borda');
     assert.deepEqual(
-      results.data.standings.map((s) => s.id),
+      Object.keys(results.data.results).sort(),
+      ['borda', 'condorcet', 'contingent', 'irv', 'stv'],
+    );
+    // Points (top 3): Tacos 3+3+2+1 = 9, Sushi 3+3+2 = 8, Pizza 3+2 = 5.
+    const borda = results.data.results.borda;
+    assert.deepEqual(borda.winners, [candidatesByName.Tacos]);
+    assert.deepEqual(
+      borda.standings.map((s) => s.id),
       [candidatesByName.Tacos, candidatesByName.Sushi, candidatesByName.Pizza],
     );
-    assert.equal(results.data.standings[0].points, 9);
-    assert.equal(results.data.numRanks, 3);
+    assert.equal(borda.standings[0].points, 9);
+    // Every hypothetical method reports a winner from the same ballots.
+    for (const key of ['irv', 'stv', 'condorcet', 'contingent']) {
+      assert.ok(results.data.results[key].winners.length >= 1, key);
+    }
     assert.equal(results.data.totalBallots, 5);
   });
 
@@ -306,6 +315,66 @@ test('opening clamps ranks to the option count and allows returning to setup', a
     body: { name: 'Z' },
   });
   assert.equal(add.status, 201);
+});
+
+test('counting methods are validated, locked after setup, and STV seats clamp', async (t) => {
+  const { request } = await startServer(t);
+
+  const bad = await request('/api/elections', {
+    method: 'POST',
+    body: { title: 'X', numRanks: 2, method: 'first-past-the-post', candidates: ['A', 'B'] },
+  });
+  assert.equal(bad.status, 400);
+
+  const created = await request('/api/elections', {
+    method: 'POST',
+    body: {
+      title: 'Committee seats',
+      numRanks: 3,
+      method: 'stv',
+      numWinners: 5,
+      candidates: ['A', 'B', 'C'],
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.election.method, 'stv');
+  assert.equal(created.data.election.numWinners, 5);
+  const admin = created.data.adminToken;
+  const id = created.data.election.id;
+
+  // Public view announces the method before voting opens.
+  const pub = await request(`/api/elections/${id}`);
+  assert.equal(pub.data.election.method, 'stv');
+
+  // Opening clamps seats below the option count (3 options -> max 2 seats).
+  const open = await request(`/api/admin/${admin}/status`, {
+    method: 'POST',
+    body: { status: 'open' },
+  });
+  assert.equal(open.data.election.numWinners, 2);
+
+  // Method and seats are ballot rules: locked while voting is open.
+  const patchMethod = await request(`/api/admin/${admin}`, {
+    method: 'PATCH',
+    body: { method: 'irv' },
+  });
+  assert.equal(patchMethod.status, 409);
+  const patchSeats = await request(`/api/admin/${admin}`, {
+    method: 'PATCH',
+    body: { numWinners: 2 },
+  });
+  assert.equal(patchSeats.status, 409);
+
+  // Two STV ballots, then close: official result elects two of three.
+  await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [pub.data.candidates[0].id, pub.data.candidates[1].id] },
+  });
+  await request(`/api/admin/${admin}/status`, { method: 'POST', body: { status: 'closed' } });
+  const results = await request(`/api/elections/${id}/results`);
+  assert.equal(results.data.official, 'stv');
+  assert.equal(results.data.results.stv.seats, 2);
+  assert.equal(results.data.results.stv.winners.length, 2);
 });
 
 test('malformed JSON gets a 400, unknown API routes a 404', async (t) => {

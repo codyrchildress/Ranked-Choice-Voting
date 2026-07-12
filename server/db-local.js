@@ -4,7 +4,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { SCHEMA_STATEMENTS } from './schema.js';
+import { isDuplicateColumnError, MIGRATION_STATEMENTS, SCHEMA_STATEMENTS } from './schema.js';
 
 export function createLocalDb(dbPath = process.env.RCV_DB_PATH ?? './data/runoff.db') {
   if (dbPath !== ':memory:') {
@@ -14,6 +14,13 @@ export function createLocalDb(dbPath = process.env.RCV_DB_PATH ?? './data/runoff
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   for (const sql of SCHEMA_STATEMENTS) db.exec(sql);
+  for (const sql of MIGRATION_STATEMENTS) {
+    try {
+      db.exec(sql);
+    } catch (err) {
+      if (!isDuplicateColumnError(err)) throw err;
+    }
+  }
 
   return {
     async query(sql, args = []) {

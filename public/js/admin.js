@@ -1,3 +1,4 @@
+import { METHODS, methodByKey } from './methods.js';
 import { api, copyText, el, plural, statusStamp, storage, timeString, toast } from './util.js';
 import { animateBars, renderResults } from './results-render.js';
 
@@ -187,6 +188,31 @@ function setupCard() {
         i === 0 ? 'Just one choice' : `Top ${i + 1}`),
     ),
   );
+  const methodSelect = el(
+    'select',
+    { onchange: () => updateMethodExtras() },
+    METHODS.map((m) => el('option', { value: m.key, selected: election.method === m.key }, m.name)),
+  );
+  const methodHint = el('span', { class: 'hint' });
+  const seatsSelect = el(
+    'select',
+    {},
+    Array.from({ length: 10 }, (_, i) =>
+      el('option', { value: String(i + 1), selected: election.numWinners === i + 1 }, `Elect ${i + 1}`),
+    ),
+  );
+  const seatsField = el(
+    'label',
+    { class: 'field' },
+    el('span', { text: 'Seats to fill' }),
+    seatsSelect,
+    el('span', { class: 'hint', text: 'STV elects this many options. Capped below the number of options when voting opens.' }),
+  );
+  function updateMethodExtras() {
+    methodHint.textContent = methodByKey[methodSelect.value].explain;
+    seatsField.hidden = methodSelect.value !== 'stv';
+  }
+  updateMethodExtras();
   const addInput = el('input', {
     type: 'text',
     maxlength: '100',
@@ -231,6 +257,8 @@ function setupCard() {
     el('div', { style: 'margin-top:1.3rem' },
       el('label', { class: 'field' }, el('span', { text: 'Title' }), titleInput),
       el('label', { class: 'field' }, el('span', { text: 'Description' }), descInput),
+      el('label', { class: 'field' }, el('span', { text: 'Counting method' }), methodSelect, methodHint),
+      seatsField,
       el('label', { class: 'field' }, el('span', { text: 'Ranked choices per voter' }), ranksSelect),
       el(
         'div',
@@ -247,6 +275,8 @@ function setupCard() {
                     title: titleInput.value,
                     description: descInput.value,
                     numRanks: Number(ranksSelect.value),
+                    method: methodSelect.value,
+                    numWinners: Number(seatsSelect.value),
                   },
                 });
                 data.election = res.election;
@@ -330,7 +360,18 @@ function shareCard() {
 function tallyCard() {
   const live = data.election.status === 'open';
   const holder = el('div', {});
-  holder.append(renderResults({ ...data.results, candidates: data.candidates }, { live }));
+  holder.append(
+    renderResults(
+      {
+        official: data.election.method,
+        results: data.results,
+        candidates: data.candidates,
+        totalBallots: data.ballotCount,
+        election: data.election,
+      },
+      { live },
+    ),
+  );
   return el(
     'section',
     { class: 'card' },
