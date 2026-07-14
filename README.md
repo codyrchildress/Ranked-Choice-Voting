@@ -2,8 +2,8 @@
 
 A small, self-hosted web app for holding **ranked elections** with a team, club, or friend group — counted by your choice of five methods.
 
-- **Create an election** — add the options, pick the counting method (instant-runoff, STV, Borda, Condorcet, or contingent), choose how many ranked choices each voter gets (top 3, top 5, …), and pick the ballot privacy: **secret** (default) or **open ballots**, where voters sign their ballot and every name and ranking is published with the results.
-- **Share one link** — anyone with the voter link casts one ballot. No accounts, no sign-ins. The ballot itself tells voters whether the election is secret or on the record.
+- **Create an election with any number of questions** — each question has its own options, counting method (instant-runoff, STV, Borda, Condorcet, or contingent), ranked choices per voter (top 3, top 5, …), and seats (STV). Election-wide, pick the ballot privacy: **secret** (default) or **open ballots**, where voters sign their ballot and every name and ranking is published with the results.
+- **Share one link** — anyone with the voter link casts one ballot covering all questions (individual questions can be left blank). No accounts, no sign-ins. The ballot itself tells voters whether the election is secret or on the record.
 - **Or hold a secure election** — switch the voter check to **one-time ballot codes**: generate single-use codes on the admin page (optionally labeled with names) and hand them out as personal links. Exactly one ballot per code, enforced server-side.
 - **Results stay sealed** until the organizer closes voting; then the official count goes public — along with a "what if?" view recounting the same ballots under every other method, just for fun.
 
@@ -22,7 +22,7 @@ npm start          # http://localhost:3000
 
 ## The five counting methods
 
-Every ballot is the same — a ranking of up to K options — so the admin's chosen method decides how those rankings become a result, and the results page can recount the same ballots under all five:
+Every answer is the same — a ranking of up to K options — so each question's chosen method decides how those rankings become a result, and the results page can recount the same answers under all five:
 
 | Method | In one line |
 |---|---|
@@ -44,11 +44,11 @@ The engines live in [server/methods/](server/methods/) (one file per method, eac
 
 | Status | Voters see | Admin can |
 |---|---|---|
-| **In setup** | "Not open yet" | Edit title/description, add/remove options, change the counting method, seats (STV), ranks per voter, ballot privacy, and voter check |
-| **Voting open** | The ballot | Watch a private live tally (all five methods), manage ballot codes (generate more, revoke unused), close voting, or return to setup while no ballots exist |
+| **In setup** | "Not open yet" | Edit title/description, add/remove/edit questions and their options, counting methods, seats (STV), ranks per voter, ballot privacy, and voter check |
+| **Voting open** | The ballot | Watch a private live per-question tally (all five methods), manage ballot codes (generate more, revoke unused), close voting, or return to setup while no ballots exist |
 | **Closed** | Results | Reopen voting (seals results again), delete the election |
 
-Ranks per voter are clamped to the number of options when voting opens, and STV seats are clamped below the option count. Options and counting rules are locked while voting is open so every ballot is cast under the same rules.
+When voting opens, every question must have at least two options; each question's ranks clamp to its option count and STV seats clamp below it. Questions, options, and counting rules are locked while voting is open so every ballot is cast under the same rules.
 
 ## Configuration
 
@@ -112,15 +112,17 @@ All endpoints are JSON under `/api`. The interesting ones:
 
 | Method & path | What it does |
 |---|---|
-| `POST /api/elections` | Create (`{title, description?, numRanks, method?, numWinners?, ballotPrivacy?, security?, candidates[]}`) → returns the one-time `adminToken` |
+| `POST /api/elections` | Create (`{title, description?, ballotPrivacy?, security?, questions: [{prompt?, method?, numRanks?, numWinners?, candidates[]}]}`) → returns the one-time `adminToken`. The pre-questions flat shape (`candidates[]` + `numRanks` at the top level) still works. |
 | `GET /api/elections/:id` | Public election info + your voted status |
-| `POST /api/elections/:id/ballots` | Cast `{rankings: [candidateId…], voterName?, code?}` (only while open; `code` required for code-secured elections) |
+| `POST /api/elections/:id/ballots` | Cast `{answers: {questionId: [candidateId…]}, voterName?, code?}` (only while open; questions may be omitted to skip; `code` required for code-secured elections) |
 | `GET /api/elections/:id/codes/:code` | Pre-check a ballot code: `{ok, label?}` or `{ok: false, reason: "used"\|"invalid"}` |
 | `POST /api/admin/:token/codes` · `DELETE …/codes/:codeId` | Generate codes (`{count}` or `{labels: [name…]}`) · revoke an unused code |
 | `GET /api/elections/:id/results` | The official result plus recounts under all five methods (and the signed ballots, for open-ballot elections) — `403` until the election closes |
 | `GET /api/admin/:token` | Everything, including the live tally and voter roster |
 | `POST /api/admin/:token/status` | `{status: "open" \| "closed" \| "draft"}` transitions |
-| `PATCH /api/admin/:token` | Edit title/description (anytime); numRanks, method, numWinners (setup only) |
+| `PATCH /api/admin/:token` | Edit title/description (anytime); ballotPrivacy, security (setup only) |
+| `POST/PATCH/DELETE /api/admin/:token/questions[/:qid]` | Manage questions and their counting rules (setup only) |
+| `POST/DELETE …/questions/:qid/candidates[/:cid]` | Manage a question's options (setup only) |
 | `POST /api/admin/:token/candidates` · `DELETE …/candidates/:cid` | Edit options (setup only) |
 | `DELETE /api/admin/:token` | Delete the election and all its ballots |
 
@@ -138,6 +140,7 @@ server/
   db-local.js   node:sqlite driver (dev, tests, Docker, VPS)
   db-turso.js   hosted libSQL driver (Vercel)
   schema.js     shared table definitions + additive migrations
+  migrate.js    data backfill: pre-questions elections -> one question each
   tabulate.js   tally registry: runs every counting method
   methods/      one pure engine per method (irv, stv, borda,
                 condorcet, contingent) + shared tiebreak helpers

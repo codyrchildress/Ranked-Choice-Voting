@@ -2,50 +2,12 @@ import { METHODS, methodByKey } from './methods.js';
 import { api, el, statusStamp, storage, toast } from './util.js';
 
 const form = document.getElementById('create-form');
-const optionRows = document.getElementById('option-rows');
-const addOptionBtn = document.getElementById('add-option');
-const ranksSelect = document.getElementById('num-ranks');
-const methodOptions = document.getElementById('method-options');
-const methodBlurb = document.getElementById('method-blurb');
-const seatsField = document.getElementById('seats-field');
-const seatsSelect = document.getElementById('num-winners');
+const questionBlocks = document.getElementById('question-blocks');
+const addQuestionBtn = document.getElementById('add-question');
 
-// ---- create form ----
+// ---- question builder ----
 
-for (let i = 1; i <= 10; i += 1) {
-  ranksSelect.append(
-    el('option', { value: String(i), selected: i === 3 }, i === 1 ? 'Just one choice' : `Top ${i}`),
-  );
-  seatsSelect.append(el('option', { value: String(i), selected: i === 2 }, `Elect ${i}`));
-}
-
-let selectedMethod = 'irv';
-
-function onMethodChange(key) {
-  selectedMethod = key;
-  methodBlurb.textContent = methodByKey[key].explain;
-  seatsField.hidden = key !== 'stv';
-}
-
-for (const method of METHODS) {
-  methodOptions.append(
-    el(
-      'label',
-      { class: 'method-option' },
-      el('input', {
-        type: 'radio',
-        name: 'method',
-        value: method.key,
-        checked: method.key === selectedMethod,
-        onchange: () => onMethodChange(method.key),
-      }),
-      el('div', {}, el('strong', { text: method.name }), el('span', { text: method.tag })),
-    ),
-  );
-}
-onMethodChange(selectedMethod);
-
-function addOptionRow(placeholder = 'Add an option') {
+function addOptionRow(container, placeholder = 'Add an option') {
   const input = el('input', { type: 'text', maxlength: '100', placeholder });
   const row = el(
     'div',
@@ -56,45 +18,145 @@ function addOptionRow(placeholder = 'Add an option') {
       type: 'button',
       'aria-label': 'Remove this option',
       onclick: () => {
-        if (optionRows.children.length <= 2) {
-          toast('An election needs at least two options.', 'error');
+        if (container.children.length <= 2) {
+          toast('A question needs at least two options.', 'error');
           return;
         }
         row.remove();
       },
     }, '✕'),
   );
-  optionRows.append(row);
+  container.append(row);
   return input;
 }
 
-addOptionRow('e.g. Tacos');
-addOptionRow('e.g. Sushi');
-addOptionRow('e.g. That Thai place');
+function addQuestionBlock() {
+  const optionRows = el('div', { class: 'option-rows' });
+  addOptionRow(optionRows, 'e.g. First option');
+  addOptionRow(optionRows, 'e.g. Second option');
+  addOptionRow(optionRows, 'e.g. Third option');
 
-addOptionBtn.addEventListener('click', () => {
-  if (optionRows.children.length >= 50) {
-    toast('Elections are capped at 50 options.', 'error');
+  const methodSelect = el(
+    'select',
+    { class: 'q-method', onchange: () => updateMethodExtras() },
+    METHODS.map((m, i) => el('option', { value: m.key, selected: i === 0 }, m.name)),
+  );
+  const methodHint = el('span', { class: 'hint' });
+  const ranksSelect = el(
+    'select',
+    { class: 'q-ranks' },
+    Array.from({ length: 10 }, (_, i) =>
+      el('option', { value: String(i + 1), selected: i + 1 === 3 }, i === 0 ? 'Just one choice' : `Top ${i + 1}`),
+    ),
+  );
+  const seatsSelect = el(
+    'select',
+    { class: 'q-seats' },
+    Array.from({ length: 10 }, (_, i) => el('option', { value: String(i + 1), selected: i + 1 === 2 }, `Elect ${i + 1}`)),
+  );
+  const seatsField = el(
+    'label',
+    { class: 'field' },
+    el('span', { text: 'Seats to fill' }),
+    seatsSelect,
+    el('span', { class: 'hint', text: 'STV elects this many options.' }),
+  );
+  function updateMethodExtras() {
+    methodHint.textContent = methodByKey[methodSelect.value].explain;
+    seatsField.hidden = methodSelect.value !== 'stv';
+  }
+  updateMethodExtras();
+
+  const block = el(
+    'div',
+    { class: 'question-block' },
+    el(
+      'div',
+      { class: 'question-block-head' },
+      el('strong', { class: 'question-block-title' }),
+      el('button', {
+        class: 'icon-btn q-remove',
+        type: 'button',
+        'aria-label': 'Remove this question',
+        onclick: () => {
+          if (questionBlocks.children.length <= 1) {
+            toast('An election needs at least one question.', 'error');
+            return;
+          }
+          block.remove();
+          renumberQuestions();
+        },
+      }, '✕'),
+    ),
+    el(
+      'label',
+      { class: 'field' },
+      el('span', {}, 'Prompt ', el('small', { class: 'muted', text: '(optional for a single question)' })),
+      el('input', { class: 'q-prompt', type: 'text', maxlength: '200', placeholder: 'e.g. Who should be treasurer?' }),
+    ),
+    el('div', { class: 'field' }, el('span', { text: 'Options' }), optionRows,
+      el('button', {
+        class: 'btn ghost small',
+        type: 'button',
+        onclick: () => addOptionRow(optionRows).focus(),
+      }, '+ Add option'),
+    ),
+    el('label', { class: 'field' }, el('span', { text: 'Counting method' }), methodSelect, methodHint),
+    seatsField,
+    el('label', { class: 'field' }, el('span', { text: 'Ranked choices per voter' }), ranksSelect),
+  );
+  questionBlocks.append(block);
+  renumberQuestions();
+  return block;
+}
+
+function renumberQuestions() {
+  const blocks = [...questionBlocks.children];
+  blocks.forEach((block, index) => {
+    block.querySelector('.question-block-title').textContent = `Question ${index + 1}`;
+    block.querySelector('.q-remove').hidden = blocks.length <= 1;
+  });
+}
+
+addQuestionBlock();
+
+addQuestionBtn.addEventListener('click', () => {
+  if (questionBlocks.children.length >= 20) {
+    toast('Elections are capped at 20 questions.', 'error');
     return;
   }
-  addOptionRow().focus();
+  const block = addQuestionBlock();
+  block.querySelector('.q-prompt').focus();
 });
+
+// ---- create ----
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const title = form.elements.namedItem('title').value.trim();
   const description = form.elements.namedItem('description').value.trim();
-  const candidates = [...optionRows.querySelectorAll('input')]
-    .map((input) => input.value.trim())
-    .filter(Boolean);
-
   if (!title) {
     toast('Give your election a title.', 'error');
     return;
   }
-  if (candidates.length < 2) {
-    toast('Add at least two options.', 'error');
-    return;
+
+  const questions = [];
+  const blocks = [...questionBlocks.children];
+  for (const [index, block] of blocks.entries()) {
+    const candidates = [...block.querySelectorAll('.option-rows input')]
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    if (candidates.length < 2) {
+      toast(`Question ${index + 1} needs at least two options.`, 'error');
+      return;
+    }
+    questions.push({
+      prompt: block.querySelector('.q-prompt').value.trim(),
+      method: block.querySelector('.q-method').value,
+      numRanks: Number(block.querySelector('.q-ranks').value),
+      numWinners: Number(block.querySelector('.q-seats').value),
+      candidates,
+    });
   }
 
   const submitBtn = form.querySelector('button[type="submit"]');
@@ -105,12 +167,9 @@ form.addEventListener('submit', async (event) => {
       body: {
         title,
         description,
-        numRanks: Number(ranksSelect.value),
-        method: selectedMethod,
-        numWinners: Number(seatsSelect.value),
         ballotPrivacy: form.elements.namedItem('ballotPrivacy').value,
         security: form.elements.namedItem('security').value,
-        candidates,
+        questions,
       },
     });
     storage.saveMine({

@@ -1,35 +1,40 @@
 import { shortId } from './ids.js';
 
+// elections.num_ranks/method/num_winners are legacy columns (counting rules
+// live on questions now); constants keep the NOT NULL happy on old schemas.
 const INSERT_ELECTION = `INSERT INTO elections (id, admin_token_hash, title, description, num_ranks, method, num_winners, ballot_privacy, security, status, created_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`;
-const INSERT_CANDIDATE = 'INSERT INTO candidates (id, election_id, name, position) VALUES (?, ?, ?, ?)';
+   VALUES (?, ?, ?, ?, 1, 'borda', 1, ?, ?, 'draft', ?)`;
+const INSERT_QUESTION = `INSERT INTO questions (id, election_id, prompt, position, method, num_ranks, num_winners)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`;
+const INSERT_CANDIDATE =
+  'INSERT INTO candidates (id, election_id, question_id, name, position) VALUES (?, ?, ?, ?, ?)';
 
 export function createStore(db) {
   return {
-    async createElection({
-      title,
-      description,
-      numRanks,
-      method,
-      numWinners,
-      ballotPrivacy,
-      security,
-      candidateNames,
-      adminTokenHash,
-    }) {
+    async createElection({ title, description, ballotPrivacy, security, questions, adminTokenHash }) {
       for (let attempt = 0; ; attempt += 1) {
         const id = shortId(10);
         try {
-          await db.batch([
+          const statements = [
             {
               sql: INSERT_ELECTION,
-              args: [id, adminTokenHash, title, description, numRanks, method, numWinners, ballotPrivacy, security, Date.now()],
+              args: [id, adminTokenHash, title, description, ballotPrivacy, security, Date.now()],
             },
-            ...candidateNames.map((name, i) => ({
-              sql: INSERT_CANDIDATE,
-              args: [shortId(8), id, name, i + 1],
-            })),
-          ]);
+          ];
+          questions.forEach((question, qIndex) => {
+            const questionId = shortId(8);
+            statements.push({
+              sql: INSERT_QUESTION,
+              args: [questionId, id, question.prompt, qIndex + 1, question.method, question.numRanks, question.numWinners],
+            });
+            question.candidateNames.forEach((name, cIndex) => {
+              statements.push({
+                sql: INSERT_CANDIDATE,
+                args: [shortId(8), id, questionId, name, cIndex + 1],
+              });
+            });
+          });
+          await db.batch(statements);
           return await this.getElection(id);
         } catch (err) {
           if (attempt < 5 && String(err.message).includes('UNIQUE')) continue;
@@ -50,9 +55,9 @@ export function createStore(db) {
 
     async saveElection(el) {
       await db.run(
-        `UPDATE elections SET title = ?, description = ?, num_ranks = ?, method = ?, num_winners = ?, ballot_privacy = ?, security = ?, status = ?, opened_at = ?, closed_at = ?
+        `UPDATE elections SET title = ?, description = ?, ballot_privacy = ?, security = ?, status = ?, opened_at = ?, closed_at = ?
          WHERE id = ?`,
-        [el.title, el.description, el.numRanks, el.method, el.numWinners, el.ballotPrivacy, el.security, el.status, el.openedAt ?? null, el.closedAt ?? null, el.id],
+        [el.title, el.description, el.ballotPrivacy, el.security, el.status, el.openedAt ?? null, el.closedAt ?? null, el.id],
       );
     },
 
@@ -61,47 +66,112 @@ export function createStore(db) {
     async deleteElection(id) {
       await db.batch([
         { sql: 'DELETE FROM ballots WHERE election_id = ?', args: [id] },
+        { sql: 'DELETE FROM ballot_codes WHERE election_id = ?', args: [id] },
         { sql: 'DELETE FROM candidates WHERE election_id = ?', args: [id] },
+        { sql: 'DELETE FROM questions WHERE election_id = ?', args: [id] },
         { sql: 'DELETE FROM elections WHERE id = ?', args: [id] },
       ]);
     },
 
-    async listCandidates(electionId) {
+    // ---- questions ----
+
+    async listQuestions(electionId) {
       const rows = await db.query(
-        'SELECT id, name FROM candidates WHERE election_id = ? ORDER BY position, name',
+        `SELECT id, prompt, position, method, num_ranks AS numRanks, num_winners AS numWinners
+         FROM questions WHERE election_id = ? ORDER BY position, rowid`,
         [electionId],
       );
-      return rows.map((row) => ({ id: row.id, name: row.name }));
+      return rows.map((row) => ({
+        id: row.id,
+        prompt: row.prompt,
+        position: row.position,
+        method: row.method,
+        numRanks: row.numRanks,
+        numWinners: row.numWinners,
+      }));
     },
 
-    async addCandidate(electionId, name) {
+    async getQuestion(electionId, questionId) {
+      const rows = await db.query(
+        `SELECT id, prompt, position, method, num_ranks AS numRanks, num_winners AS numWinners
+         FROM questions WHERE election_id = ? AND id = ?`,
+        [electionId, questionId],
+      );
+      const row = rows[0];
+      if (!row) return null;
+      return {
+        id: row.id,
+        prompt: row.prompt,
+        position: row.position,
+        method: row.method,
+        numRanks: row.numRanks,
+        numWinners: row.numWinners,
+      };
+    },
+
+    async addQuestion(electionId, { prompt, method, numRanks, numWinners }) {
       await db.run(
-        `INSERT INTO candidates (id, election_id, name, position)
-         SELECT ?, ?, ?, COALESCE(MAX(position), 0) + 1 FROM candidates WHERE election_id = ?`,
-        [shortId(8), electionId, name, electionId],
+        `INSERT INTO questions (id, election_id, prompt, position, method, num_ranks, num_winners)
+         SELECT ?, ?, ?, COALESCE(MAX(position), 0) + 1, ?, ?, ? FROM questions WHERE election_id = ?`,
+        [shortId(8), electionId, prompt, method, numRanks, numWinners, electionId],
       );
     },
 
-    async removeCandidate(electionId, candidateId) {
-      const { changes } = await db.run('DELETE FROM candidates WHERE id = ? AND election_id = ?', [
+    async saveQuestion(question) {
+      await db.run(
+        'UPDATE questions SET prompt = ?, method = ?, num_ranks = ?, num_winners = ? WHERE id = ?',
+        [question.prompt, question.method, question.numRanks, question.numWinners, question.id],
+      );
+    },
+
+    async removeQuestion(electionId, questionId) {
+      await db.batch([
+        { sql: 'DELETE FROM candidates WHERE question_id = ? AND election_id = ?', args: [questionId, electionId] },
+        { sql: 'DELETE FROM questions WHERE id = ? AND election_id = ?', args: [questionId, electionId] },
+      ]);
+    },
+
+    // ---- candidates ----
+
+    async listCandidatesByElection(electionId) {
+      const rows = await db.query(
+        'SELECT id, question_id AS questionId, name FROM candidates WHERE election_id = ? ORDER BY position, rowid',
+        [electionId],
+      );
+      return rows.map((row) => ({ id: row.id, questionId: row.questionId, name: row.name }));
+    },
+
+    async addCandidate(electionId, questionId, name) {
+      await db.run(
+        `INSERT INTO candidates (id, election_id, question_id, name, position)
+         SELECT ?, ?, ?, ?, COALESCE(MAX(position), 0) + 1 FROM candidates WHERE question_id = ?`,
+        [shortId(8), electionId, questionId, name, questionId],
+      );
+    },
+
+    async removeCandidate(questionId, candidateId) {
+      const { changes } = await db.run('DELETE FROM candidates WHERE id = ? AND question_id = ?', [
         candidateId,
-        electionId,
+        questionId,
       ]);
       return changes > 0;
     },
 
-    async insertBallot({ electionId, voterName, rankings }) {
+    // ---- ballots ----
+
+    async insertBallot({ electionId, voterName, answers }) {
       const id = shortId(12);
       await db.run(
         'INSERT INTO ballots (id, election_id, voter_name, rankings, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, electionId, voterName, JSON.stringify(rankings), Date.now()],
+        [id, electionId, voterName, JSON.stringify(answers), Date.now()],
       );
       return id;
     },
 
-    async listBallotRankings(electionId) {
+    // Each ballot's answers: {questionId: [candidateId, ...], ...}
+    async listAnswers(electionId) {
       const rows = await db.query(
-        'SELECT rankings FROM ballots WHERE election_id = ? ORDER BY created_at, id',
+        'SELECT rankings FROM ballots WHERE election_id = ? ORDER BY created_at, rowid',
         [electionId],
       );
       return rows.map((row) => JSON.parse(row.rankings));
@@ -114,10 +184,23 @@ export function createStore(db) {
 
     async listVoters(electionId) {
       const rows = await db.query(
-        'SELECT voter_name AS name, created_at AS createdAt FROM ballots WHERE election_id = ? ORDER BY created_at, id',
+        'SELECT voter_name AS name, created_at AS createdAt FROM ballots WHERE election_id = ? ORDER BY created_at, rowid',
         [electionId],
       );
       return rows.map((row) => ({ name: row.name, createdAt: row.createdAt }));
+    },
+
+    // Full signed ballots — only ever exposed for open-ballot elections.
+    async listSignedBallots(electionId) {
+      const rows = await db.query(
+        'SELECT voter_name AS name, rankings, created_at AS createdAt FROM ballots WHERE election_id = ? ORDER BY created_at, rowid',
+        [electionId],
+      );
+      return rows.map((row) => ({
+        name: row.name,
+        answers: JSON.parse(row.rankings),
+        createdAt: row.createdAt,
+      }));
     },
 
     // ---- one-time ballot codes (secure elections) ----
@@ -190,19 +273,6 @@ export function createStore(db) {
       );
       return { total: rows[0].total, used: rows[0].used };
     },
-
-    // Full signed ballots — only ever exposed for open-ballot elections.
-    async listSignedBallots(electionId) {
-      const rows = await db.query(
-        'SELECT voter_name AS name, rankings, created_at AS createdAt FROM ballots WHERE election_id = ? ORDER BY created_at, id',
-        [electionId],
-      );
-      return rows.map((row) => ({
-        name: row.name,
-        rankings: JSON.parse(row.rankings),
-        createdAt: row.createdAt,
-      }));
-    },
   };
 }
 
@@ -213,9 +283,6 @@ function mapElection(row) {
     adminTokenHash: row.admin_token_hash,
     title: row.title,
     description: row.description,
-    numRanks: row.num_ranks,
-    method: row.method,
-    numWinners: row.num_winners,
     ballotPrivacy: row.ballot_privacy,
     security: row.security,
     status: row.status,

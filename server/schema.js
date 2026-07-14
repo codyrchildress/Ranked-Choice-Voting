@@ -1,5 +1,10 @@
 // One statement per entry so drivers can run them individually (libSQL's
 // batch API) or joined (node:sqlite exec). All idempotent.
+//
+// Note: elections.num_ranks / method / num_winners are legacy columns from
+// the single-question era — counting rules live on questions now. They're
+// kept (and written with constants) because SQLite can't cheaply drop
+// NOT NULL columns from existing databases.
 export const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS elections (
     id TEXT PRIMARY KEY,
@@ -16,9 +21,20 @@ export const SCHEMA_STATEMENTS = [
     opened_at INTEGER,
     closed_at INTEGER
   )`,
+  `CREATE TABLE IF NOT EXISTS questions (
+    id TEXT PRIMARY KEY,
+    election_id TEXT NOT NULL REFERENCES elections(id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL,
+    method TEXT NOT NULL DEFAULT 'borda',
+    num_ranks INTEGER NOT NULL DEFAULT 3,
+    num_winners INTEGER NOT NULL DEFAULT 1
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_questions_election ON questions(election_id, position)',
   `CREATE TABLE IF NOT EXISTS candidates (
     id TEXT PRIMARY KEY,
     election_id TEXT NOT NULL REFERENCES elections(id) ON DELETE CASCADE,
+    question_id TEXT,
     name TEXT NOT NULL,
     position INTEGER NOT NULL
   )`,
@@ -50,6 +66,7 @@ export const MIGRATION_STATEMENTS = [
   'ALTER TABLE elections ADD COLUMN num_winners INTEGER NOT NULL DEFAULT 1',
   "ALTER TABLE elections ADD COLUMN ballot_privacy TEXT NOT NULL DEFAULT 'anonymous'",
   "ALTER TABLE elections ADD COLUMN security TEXT NOT NULL DEFAULT 'link'",
+  'ALTER TABLE candidates ADD COLUMN question_id TEXT',
 ];
 
 export function isDuplicateColumnError(err) {

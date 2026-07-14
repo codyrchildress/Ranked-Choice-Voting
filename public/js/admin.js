@@ -75,14 +75,17 @@ function render() {
 
   left.append(statusCard());
   if (election.security === 'code') left.append(codesCard());
-  if (election.status === 'draft') left.append(setupCard());
+  if (election.status === 'draft') {
+    left.append(questionsCard());
+    left.append(setupCard());
+  }
   if (data.results) left.append(tallyCard());
 
   right.append(shareCard());
   if (ballotCount > 0) {
     right.append(
       election.ballotPrivacy === 'open' && data.ballots
-        ? renderSignedBallots(data.ballots, data.candidates, {
+        ? renderSignedBallots(data.ballots, data.questions, {
             title: 'Ballots',
             sub: 'Open ballot — these names and rankings are published with the results.',
           })
@@ -104,17 +107,17 @@ function render() {
 // ---- cards ----
 
 function statusCard() {
-  const { election, candidates, ballotCount } = data;
+  const { election, questions, ballotCount } = data;
   const card = el('section', { class: 'card' }, el('h2', { text: 'Voting controls' }));
 
   if (election.status === 'draft') {
+    const ready = questions.length > 0 && questions.every((q) => q.candidates.length >= 2);
     card.append(
       el('p', {
         class: 'card-sub',
-        text:
-          candidates.length < 2
-            ? 'Add at least two options below, then open voting to share the ballot.'
-            : `The ballot is ready with ${plural(candidates.length, 'option')}. Voters will rank up to ${Math.min(election.numRanks, candidates.length)}.`,
+        text: ready
+          ? `The ballot is ready with ${plural(questions.length, 'question')}. Open voting to share it.`
+          : 'Every question needs at least two options before voting can open.',
       }),
       el(
         'div',
@@ -123,7 +126,7 @@ function statusCard() {
           'button',
           {
             class: 'btn accent',
-            disabled: candidates.length < 2,
+            disabled: !ready,
             onclick: () => setStatus('open', 'Voting is open — share the voter link!'),
           },
           'Open voting',
@@ -185,39 +188,11 @@ async function setStatus(status, message) {
 }
 
 function setupCard() {
-  const { election, candidates } = data;
+  const { election } = data;
 
   const titleInput = el('input', { type: 'text', maxlength: '120', value: election.title });
   const descInput = el('textarea', { maxlength: '2000' });
   descInput.value = election.description;
-  const ranksSelect = el(
-    'select',
-    {},
-    Array.from({ length: 10 }, (_, i) =>
-      el('option', { value: String(i + 1), selected: election.numRanks === i + 1 },
-        i === 0 ? 'Just one choice' : `Top ${i + 1}`),
-    ),
-  );
-  const methodSelect = el(
-    'select',
-    { onchange: () => updateMethodExtras() },
-    METHODS.map((m) => el('option', { value: m.key, selected: election.method === m.key }, m.name)),
-  );
-  const methodHint = el('span', { class: 'hint' });
-  const seatsSelect = el(
-    'select',
-    {},
-    Array.from({ length: 10 }, (_, i) =>
-      el('option', { value: String(i + 1), selected: election.numWinners === i + 1 }, `Elect ${i + 1}`),
-    ),
-  );
-  const seatsField = el(
-    'label',
-    { class: 'field' },
-    el('span', { text: 'Seats to fill' }),
-    seatsSelect,
-    el('span', { class: 'hint', text: 'STV elects this many options. Capped below the number of options when voting opens.' }),
-  );
   const privacySelect = el(
     'select',
     {},
@@ -230,27 +205,171 @@ function setupCard() {
     el('option', { value: 'link', selected: election.security === 'link' }, 'Anyone with the link — one ballot per browser'),
     el('option', { value: 'code', selected: election.security === 'code' }, 'One-time ballot codes — one ballot per code'),
   );
+
+  return el(
+    'section',
+    { class: 'card' },
+    el('h2', { text: 'Election details' }),
+    el('p', { class: 'card-sub', text: 'Privacy and voter-check rules lock while voting is open.' }),
+    el('label', { class: 'field' }, el('span', { text: 'Title' }), titleInput),
+    el('label', { class: 'field' }, el('span', { text: 'Description' }), descInput),
+    el(
+      'label',
+      { class: 'field' },
+      el('span', { text: 'Ballot privacy' }),
+      privacySelect,
+      el('span', { class: 'hint', text: 'Open ballots require voters to sign, and publish names with rankings in the results.' }),
+    ),
+    el(
+      'label',
+      { class: 'field' },
+      el('span', { text: 'Voter check' }),
+      securitySelect,
+      el('span', { class: 'hint', text: 'Ballot codes make voting invite-only: generate single-use codes and hand them out.' }),
+    ),
+    el(
+      'div',
+      { class: 'btn-row' },
+      el(
+        'button',
+        {
+          class: 'btn',
+          onclick: async () => {
+            try {
+              const res = await api(`/api/admin/${token}`, {
+                method: 'PATCH',
+                body: {
+                  title: titleInput.value,
+                  description: descInput.value,
+                  ballotPrivacy: privacySelect.value,
+                  security: securitySelect.value,
+                },
+              });
+              data.election = res.election;
+              toast('Details saved.');
+              render();
+            } catch (err) {
+              toast(err.message, 'error');
+            }
+          },
+        },
+        'Save details',
+      ),
+    ),
+  );
+}
+
+function questionsCard() {
+  const card = el(
+    'section',
+    { class: 'card' },
+    el('h2', { text: `Questions (${data.questions.length})` }),
+    el('p', { class: 'card-sub', text: 'Prompts, options, and counting rules lock while voting is open.' }),
+  );
+  data.questions.forEach((question, index) => card.append(questionEditor(question, index)));
+  card.append(
+    el(
+      'div',
+      { class: 'btn-row' },
+      el(
+        'button',
+        {
+          class: 'btn ghost small',
+          onclick: async () => {
+            try {
+              const res = await api(`/api/admin/${token}/questions`, { method: 'POST', body: {} });
+              data.questions = res.questions;
+              render();
+            } catch (err) {
+              toast(err.message, 'error');
+            }
+          },
+        },
+        '+ Add question',
+      ),
+    ),
+  );
+  return card;
+}
+
+function questionEditor(question, index) {
+  const promptInput = el('input', {
+    type: 'text',
+    maxlength: '200',
+    value: question.prompt,
+    placeholder: 'e.g. Who should be treasurer?',
+  });
+  const methodSelect = el(
+    'select',
+    { onchange: () => updateMethodExtras() },
+    METHODS.map((m) => el('option', { value: m.key, selected: question.method === m.key }, m.name)),
+  );
+  const methodHint = el('span', { class: 'hint' });
+  const ranksSelect = el(
+    'select',
+    {},
+    Array.from({ length: 10 }, (_, i) =>
+      el('option', { value: String(i + 1), selected: question.numRanks === i + 1 },
+        i === 0 ? 'Just one choice' : `Top ${i + 1}`),
+    ),
+  );
+  const seatsSelect = el(
+    'select',
+    {},
+    Array.from({ length: 10 }, (_, i) =>
+      el('option', { value: String(i + 1), selected: question.numWinners === i + 1 }, `Elect ${i + 1}`),
+    ),
+  );
+  const seatsField = el(
+    'label',
+    { class: 'field' },
+    el('span', { text: 'Seats to fill' }),
+    seatsSelect,
+    el('span', { class: 'hint', text: 'STV elects this many options. Capped below the number of options when voting opens.' }),
+  );
   function updateMethodExtras() {
     methodHint.textContent = methodByKey[methodSelect.value].explain;
     seatsField.hidden = methodSelect.value !== 'stv';
   }
   updateMethodExtras();
+
   const addInput = el('input', {
     type: 'text',
     maxlength: '100',
     placeholder: 'Add an option…',
-    dataset: { focus: 'add-option' },
+    dataset: { focus: `add-option-${question.id}` },
   });
 
   return el(
-    'section',
-    { class: 'card' },
-    el('h2', { text: 'Ballot setup' }),
-    el('p', { class: 'card-sub', text: 'Options and ballot rules lock while voting is open.' }),
+    'div',
+    { class: 'question-block' },
+    el(
+      'div',
+      { class: 'question-block-head' },
+      el('strong', { class: 'question-block-title', text: `Question ${index + 1}` }),
+      data.questions.length > 1 &&
+        el(
+          'button',
+          {
+            class: 'icon-btn',
+            'aria-label': `Delete question ${index + 1}`,
+            onclick: async () => {
+              try {
+                const res = await api(`/api/admin/${token}/questions/${question.id}`, { method: 'DELETE' });
+                data.questions = res.questions;
+                render();
+              } catch (err) {
+                toast(err.message, 'error');
+              }
+            },
+          },
+          '✕',
+        ),
+    ),
     el(
       'ul',
       { class: 'option-list' },
-      candidates.map((c) =>
+      question.candidates.map((c) =>
         el(
           'li',
           {},
@@ -258,7 +377,21 @@ function setupCard() {
           el('span', { class: 'spacer' }),
           el(
             'button',
-            { class: 'icon-btn', 'aria-label': `Remove ${c.name}`, onclick: () => removeOption(c) },
+            {
+              class: 'icon-btn',
+              'aria-label': `Remove ${c.name}`,
+              onclick: async () => {
+                try {
+                  const res = await api(`/api/admin/${token}/questions/${question.id}/candidates/${c.id}`, {
+                    method: 'DELETE',
+                  });
+                  data.questions = res.questions;
+                  render();
+                } catch (err) {
+                  toast(err.message, 'error');
+                }
+              },
+            },
             '✕',
           ),
         ),
@@ -268,93 +401,59 @@ function setupCard() {
       'form',
       {
         class: 'copy-row',
-        onsubmit: (e) => {
+        onsubmit: async (e) => {
           e.preventDefault();
-          addOption(addInput.value);
+          if (!addInput.value.trim()) return;
+          try {
+            const res = await api(`/api/admin/${token}/questions/${question.id}/candidates`, {
+              method: 'POST',
+              body: { name: addInput.value },
+            });
+            data.questions = res.questions;
+            pendingFocus = `add-option-${question.id}`;
+            render();
+          } catch (err) {
+            toast(err.message, 'error');
+          }
         },
       },
       addInput,
       el('button', { class: 'btn small', type: 'submit' }, 'Add'),
     ),
-    el('div', { style: 'margin-top:1.3rem' },
-      el('label', { class: 'field' }, el('span', { text: 'Title' }), titleInput),
-      el('label', { class: 'field' }, el('span', { text: 'Description' }), descInput),
-      el('label', { class: 'field' }, el('span', { text: 'Counting method' }), methodSelect, methodHint),
-      seatsField,
-      el('label', { class: 'field' }, el('span', { text: 'Ranked choices per voter' }), ranksSelect),
+    el('label', { class: 'field', style: 'margin-top:0.9rem' }, el('span', { text: 'Prompt' }), promptInput),
+    el('label', { class: 'field' }, el('span', { text: 'Counting method' }), methodSelect, methodHint),
+    seatsField,
+    el('label', { class: 'field' }, el('span', { text: 'Ranked choices per voter' }), ranksSelect),
+    el(
+      'div',
+      { class: 'btn-row' },
       el(
-        'label',
-        { class: 'field' },
-        el('span', { text: 'Ballot privacy' }),
-        privacySelect,
-        el('span', { class: 'hint', text: 'Open ballots require voters to sign, and publish names with rankings in the results.' }),
-      ),
-      el(
-        'label',
-        { class: 'field' },
-        el('span', { text: 'Voter check' }),
-        securitySelect,
-        el('span', { class: 'hint', text: 'Ballot codes make voting invite-only: generate single-use codes and hand them out.' }),
-      ),
-      el(
-        'div',
-        { class: 'btn-row' },
-        el(
-          'button',
-          {
-            class: 'btn',
-            onclick: async () => {
-              try {
-                const res = await api(`/api/admin/${token}`, {
-                  method: 'PATCH',
-                  body: {
-                    title: titleInput.value,
-                    description: descInput.value,
-                    numRanks: Number(ranksSelect.value),
-                    method: methodSelect.value,
-                    numWinners: Number(seatsSelect.value),
-                    ballotPrivacy: privacySelect.value,
-                    security: securitySelect.value,
-                  },
-                });
-                data.election = res.election;
-                toast('Details saved.');
-                render();
-              } catch (err) {
-                toast(err.message, 'error');
-              }
-            },
+        'button',
+        {
+          class: 'btn small',
+          onclick: async () => {
+            try {
+              const res = await api(`/api/admin/${token}/questions/${question.id}`, {
+                method: 'PATCH',
+                body: {
+                  prompt: promptInput.value,
+                  method: methodSelect.value,
+                  numRanks: Number(ranksSelect.value),
+                  numWinners: Number(seatsSelect.value),
+                },
+              });
+              data.questions = res.questions;
+              toast('Question saved.');
+              render();
+            } catch (err) {
+              toast(err.message, 'error');
+            }
           },
-          'Save details',
-        ),
+        },
+        'Save question',
       ),
     ),
   );
-}
-
-async function addOption(name) {
-  if (!name.trim()) return;
-  try {
-    const res = await api(`/api/admin/${token}/candidates`, {
-      method: 'POST',
-      body: { name },
-    });
-    data.candidates = res.candidates;
-    pendingFocus = 'add-option';
-    render();
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-async function removeOption(candidate) {
-  try {
-    const res = await api(`/api/admin/${token}/candidates/${candidate.id}`, { method: 'DELETE' });
-    data.candidates = res.candidates;
-    render();
-  } catch (err) {
-    toast(err.message, 'error');
-  }
 }
 
 function formatCode(code) {
@@ -512,27 +611,37 @@ function shareCard() {
 
 function tallyCard() {
   const live = data.election.status === 'open';
-  const holder = el('div', {});
-  holder.append(
-    renderResults(
-      {
-        official: data.election.method,
-        results: data.results,
-        candidates: data.candidates,
-        totalBallots: data.ballotCount,
-        election: data.election,
-      },
-      { live },
-    ),
-  );
-  return el(
+  const card = el(
     'section',
     { class: 'card' },
     el('h2', { text: live ? 'Live tally' : 'Final tally' }),
     live &&
       el('p', { class: 'card-sub', text: 'Only you can see this until you close voting. Refreshes every 15 seconds.' }),
-    holder,
   );
+  const multi = data.results.length > 1;
+  data.results.forEach((entry, index) => {
+    if (multi || entry.question.prompt) {
+      card.append(el('h3', { class: 'question-heading', text: entry.question.prompt || `Question ${index + 1}` }));
+    }
+    if (multi) {
+      card.append(el('p', { class: 'card-sub', text: `${entry.answered} of ${plural(data.ballotCount, 'ballot')} answered this question` }));
+    }
+    const holder = el('div', { class: 'question-results' });
+    holder.append(
+      renderResults(
+        {
+          official: entry.official,
+          results: entry.results,
+          candidates: entry.candidates,
+          totalBallots: entry.answered,
+          election: data.election,
+        },
+        { live },
+      ),
+    );
+    card.append(holder);
+  });
+  return card;
 }
 
 function votersCard() {

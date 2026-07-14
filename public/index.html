@@ -10,6 +10,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:ital,wght@0,400..800;1,400..800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/styles.css" />
+  <meta name="theme-color" content="#f6f1e7" />
+  <script src="/js/theme.js"></script>
 </head>
 <body>
   <header class="masthead wrap">
@@ -22,6 +24,7 @@
       </svg>
       Runoff</a>
     <span class="masthead-note">ranked-choice voting</span>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch theme">☾</button>
   </header>
 
   <main class="wrap">
@@ -73,27 +76,12 @@
           </label>
         </div>
         <div class="form-section">
-          <span class="legend">02 · The options</span>
-          <div class="option-rows" id="option-rows"></div>
-          <button type="button" class="btn ghost small" id="add-option">+ Add option</button>
+          <span class="legend">02 · The questions</span>
+          <div id="question-blocks"></div>
+          <button type="button" class="btn ghost small" id="add-question">+ Add question</button>
         </div>
         <div class="form-section">
-          <span class="legend">03 · The rules</span>
-          <div class="field">
-            <span>Counting method</span>
-            <div class="method-options" id="method-options"></div>
-            <p class="method-blurb" id="method-blurb"></p>
-          </div>
-          <label class="field" id="seats-field" hidden>
-            <span>Seats to fill</span>
-            <select id="num-winners"></select>
-            <span class="hint">STV elects this many options. Capped below the number of options when voting opens.</span>
-          </label>
-          <label class="field">
-            <span>Ranked choices per voter</span>
-            <select id="num-ranks" name="numRanks"></select>
-            <span class="hint">Voters rank up to this many options. If it exceeds the number of options, it’s capped when voting opens.</span>
-          </label>
+          <span class="legend">03 · Election rules</span>
           <div class="field">
             <span>Ballot privacy</span>
             <div class="method-options">

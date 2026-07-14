@@ -437,8 +437,10 @@ function fmtV(x) {
 }
 
 // The public record for open-ballot elections: every signed ballot in full.
-export function renderSignedBallots(ballots, candidates, { title = 'The public record', sub } = {}) {
-  const names = new Map(candidates.map((c) => [c.id, c.name]));
+// `questions` is [{id, prompt, candidates}] in ballot order.
+export function renderSignedBallots(ballots, questions, { title = 'The public record', sub } = {}) {
+  const names = new Map(questions.flatMap((q) => q.candidates.map((c) => [c.id, c.name])));
+  const multi = questions.length > 1;
   return el(
     'section',
     { class: 'card standings-card', style: 'margin-top:1.3rem' },
@@ -457,10 +459,15 @@ export function renderSignedBallots(ballots, candidates, { title = 'The public r
             el('span', { text: ballot.name ?? '—' }),
             el('span', { class: 'when', text: timeString(ballot.createdAt) }),
           ),
-          el('span', {
-            class: 'order',
-            text: ballot.rankings.map((id, i) => `${i + 1}. ${names.get(id) ?? '—'}`).join('  →  '),
-          }),
+          questions
+            .map((question, index) => {
+              const rankings = ballot.answers?.[question.id];
+              if (!Array.isArray(rankings) || rankings.length === 0) return null;
+              const order = rankings.map((id, i) => `${i + 1}. ${names.get(id) ?? '—'}`).join('  →  ');
+              const label = multi ? `${question.prompt || `Question ${index + 1}`}: ` : '';
+              return el('span', { class: 'order', text: `${label}${order}` });
+            })
+            .filter(Boolean),
         ),
       ),
     ),

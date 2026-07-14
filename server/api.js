@@ -6,11 +6,13 @@ import { METHOD_KEYS, tallyAll } from './tabulate.js';
 const LIMITS = {
   title: 120,
   description: 2000,
+  prompt: 200,
   candidateName: 100,
   voterName: 80,
   maxCandidates: 50,
   maxRanks: 20,
   maxWinners: 20,
+  maxQuestions: 20,
 };
 
 const PRIVACY_MODES = ['anonymous', 'open'];
@@ -26,7 +28,7 @@ function normalizeCode(raw) {
 export function createApiRouter({ db, rateLimits = {} }) {
   const store = createStore(db);
   const router = express.Router();
-  router.use(express.json({ limit: '64kb' }));
+  router.use(express.json({ limit: '128kb' }));
 
   const limiter = (name, defaults) => {
     if (rateLimits === false) return (req, res, next) => next();
@@ -49,14 +51,41 @@ export function createApiRouter({ db, rateLimits = {} }) {
     return election;
   }
 
-  async function liveResults(election) {
-    const ballots = await store.listBallotRankings(election.id);
-    if (ballots.length === 0) return null;
-    const candidates = await store.listCandidates(election.id);
-    return tallyAll(candidates.map((c) => c.id), ballots, {
-      numRanks: election.numRanks,
-      numWinners: election.numWinners,
-      seed: election.id,
+  async function questionsWithCandidates(electionId) {
+    const questions = await store.listQuestions(electionId);
+    const candidates = await store.listCandidatesByElection(electionId);
+    return questions.map((question) => ({
+      ...question,
+      candidates: candidates
+        .filter((c) => c.questionId === question.id)
+        .map(({ id, name }) => ({ id, name })),
+    }));
+  }
+
+  // Per-question tallies over the ballots that answered that question.
+  function buildQuestionResults(election, questions, answers) {
+    return questions.map((question) => {
+      const questionBallots = answers
+        .map((ballot) => ballot?.[question.id])
+        .filter((rankings) => Array.isArray(rankings) && rankings.length > 0);
+      return {
+        question: {
+          id: question.id,
+          prompt: question.prompt,
+          position: question.position,
+          method: question.method,
+          numRanks: question.numRanks,
+          numWinners: question.numWinners,
+        },
+        candidates: question.candidates,
+        answered: questionBallots.length,
+        official: question.method,
+        results: tallyAll(question.candidates.map((c) => c.id), questionBallots, {
+          numRanks: question.numRanks,
+          numWinners: question.numWinners,
+          seed: `${election.id}|${question.id}`,
+        }),
+      };
     });
   }
 
@@ -76,21 +105,6 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(400).json({ error: `Descriptions are capped at ${LIMITS.description} characters.` });
     }
 
-    const numRanks = body.numRanks;
-    if (!Number.isInteger(numRanks) || numRanks < 1 || numRanks > LIMITS.maxRanks) {
-      return res.status(400).json({ error: `Ranked choices per voter must be a whole number from 1 to ${LIMITS.maxRanks}.` });
-    }
-
-    const method = body.method === undefined ? 'borda' : body.method;
-    if (!METHOD_KEYS.includes(method)) {
-      return res.status(400).json({ error: 'Unknown counting method.' });
-    }
-
-    const numWinners = body.numWinners === undefined ? 1 : body.numWinners;
-    if (!Number.isInteger(numWinners) || numWinners < 1 || numWinners > LIMITS.maxWinners) {
-      return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
-    }
-
     const ballotPrivacy = body.ballotPrivacy === undefined ? 'anonymous' : body.ballotPrivacy;
     if (!PRIVACY_MODES.includes(ballotPrivacy)) {
       return res.status(400).json({ error: 'Ballot privacy must be "anonymous" or "open".' });
@@ -101,20 +115,41 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(400).json({ error: 'Voter check must be "link" or "code".' });
     }
 
-    const names = (Array.isArray(body.candidates) ? body.candidates : []).map(cleanLine).filter(Boolean);
-    const problem = candidateListProblem(names);
-    if (problem) return res.status(400).json({ error: problem });
+    // The modern shape is a questions array; the original single-question
+    // shape (flat candidates/method/numRanks) is still accepted.
+    let rawQuestions = Array.isArray(body.questions) ? body.questions : null;
+    if (!rawQuestions && Array.isArray(body.candidates)) {
+      rawQuestions = [
+        {
+          prompt: '',
+          method: body.method,
+          numRanks: body.numRanks,
+          numWinners: body.numWinners,
+          candidates: body.candidates,
+        },
+      ];
+    }
+    if (!rawQuestions || rawQuestions.length === 0) {
+      return res.status(400).json({ error: 'Add at least one question.' });
+    }
+    if (rawQuestions.length > LIMITS.maxQuestions) {
+      return res.status(400).json({ error: `Elections are capped at ${LIMITS.maxQuestions} questions.` });
+    }
+
+    const questions = [];
+    for (const spec of rawQuestions) {
+      const parsed = parseQuestionSpec(spec);
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      questions.push({ ...parsed.question, candidateNames: parsed.candidateNames });
+    }
 
     const token = adminToken();
     const election = await store.createElection({
       title,
       description,
-      numRanks,
-      method,
-      numWinners: method === 'stv' ? numWinners : 1,
       ballotPrivacy,
       security,
-      candidateNames: names,
+      questions,
       adminTokenHash: sha256(token),
     });
     res.status(201).json({ election: publicElection(election), adminToken: token });
@@ -127,7 +162,7 @@ export function createApiRouter({ db, rateLimits = {} }) {
     const cookies = parseCookies(req.headers.cookie);
     res.json({
       election: publicElection(election),
-      candidates: await store.listCandidates(election.id),
+      questions: await questionsWithCandidates(election.id),
       ballotCount: await store.countBallots(election.id),
       hasVoted: Boolean(cookies[votedCookie(election.id)]),
     });
@@ -144,18 +179,12 @@ export function createApiRouter({ db, rateLimits = {} }) {
         ballotCount: await store.countBallots(election.id),
       });
     }
-    const candidates = await store.listCandidates(election.id);
-    const ballots = await store.listBallotRankings(election.id);
+    const questions = await questionsWithCandidates(election.id);
+    const answers = await store.listAnswers(election.id);
     res.json({
       election: publicElection(election),
-      candidates,
-      totalBallots: ballots.length,
-      official: election.method,
-      results: tallyAll(candidates.map((c) => c.id), ballots, {
-        numRanks: election.numRanks,
-        numWinners: election.numWinners,
-        seed: election.id,
-      }),
+      totalBallots: answers.length,
+      questions: buildQuestionResults(election, questions, answers),
       // Open-ballot elections publish the signed ballots with the results.
       ...(election.ballotPrivacy === 'open'
         ? { ballots: await store.listSignedBallots(election.id) }
@@ -181,16 +210,36 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(409).json({ error: 'A ballot has already been cast from this browser.', alreadyVoted: true });
     }
 
-    const rankings = req.body?.rankings;
-    if (!Array.isArray(rankings) || rankings.length === 0) {
+    const questions = await questionsWithCandidates(election.id);
+    let answers = req.body?.answers;
+    if (answers === undefined && Array.isArray(req.body?.rankings) && questions.length === 1) {
+      // legacy single-question ballots
+      answers = { [questions[0].id]: req.body.rankings };
+    }
+    if (typeof answers !== 'object' || answers === null || Array.isArray(answers)) {
       return res.status(400).json({ error: 'Rank at least one option.' });
     }
-    if (rankings.length > election.numRanks) {
-      return res.status(400).json({ error: `You can rank at most ${election.numRanks} options.` });
+
+    const byId = new Map(questions.map((q) => [q.id, q]));
+    const cleanAnswers = {};
+    for (const [questionId, rankings] of Object.entries(answers)) {
+      if (!Array.isArray(rankings) || rankings.length === 0) continue; // question skipped
+      const question = byId.get(questionId);
+      if (!question) {
+        return res.status(400).json({ error: 'That ballot answers a question that does not exist.' });
+      }
+      const label = question.prompt || `question ${question.position}`;
+      if (rankings.length > question.numRanks) {
+        return res.status(400).json({ error: `You can rank at most ${question.numRanks} options for “${label}”.` });
+      }
+      const validIds = new Set(question.candidates.map((c) => c.id));
+      if (new Set(rankings).size !== rankings.length || !rankings.every((id) => validIds.has(id))) {
+        return res.status(400).json({ error: `That ballot contains invalid or duplicate options for “${label}”.` });
+      }
+      cleanAnswers[questionId] = rankings;
     }
-    const validIds = new Set((await store.listCandidates(election.id)).map((c) => c.id));
-    if (new Set(rankings).size !== rankings.length || !rankings.every((id) => validIds.has(id))) {
-      return res.status(400).json({ error: 'That ballot contains invalid or duplicate options.' });
+    if (Object.keys(cleanAnswers).length === 0) {
+      return res.status(400).json({ error: 'Rank at least one option.' });
     }
 
     const voterName = cleanLine(req.body?.voterName).slice(0, LIMITS.voterName) || null;
@@ -213,7 +262,7 @@ export function createApiRouter({ db, rateLimits = {} }) {
       }
     }
 
-    const ballotId = await store.insertBallot({ electionId: election.id, voterName, rankings });
+    const ballotId = await store.insertBallot({ electionId: election.id, voterName, answers: cleanAnswers });
     res.cookie(votedCookie(election.id), '1', {
       maxAge: 365 * 24 * 60 * 60 * 1000,
       sameSite: 'lax',
@@ -243,18 +292,207 @@ export function createApiRouter({ db, rateLimits = {} }) {
     const election = await requireAdmin(req, res);
     if (!election) return;
     res.set('Cache-Control', 'no-store');
+    const questions = await questionsWithCandidates(election.id);
+    const ballotCount = await store.countBallots(election.id);
     res.json({
       election: publicElection(election),
-      candidates: await store.listCandidates(election.id),
-      ballotCount: await store.countBallots(election.id),
+      questions,
+      ballotCount,
       voters: await store.listVoters(election.id),
-      results: await liveResults(election),
+      results:
+        ballotCount > 0
+          ? buildQuestionResults(election, questions, await store.listAnswers(election.id))
+          : null,
       ...(election.ballotPrivacy === 'open'
         ? { ballots: await store.listSignedBallots(election.id) }
         : {}),
       ...(election.security === 'code' ? { codes: await store.listCodes(election.id) } : {}),
     });
   });
+
+  router.patch('/admin/:token', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    const body = req.body ?? {};
+
+    if (body.title !== undefined) {
+      const title = cleanLine(body.title);
+      if (!title) return res.status(400).json({ error: 'Give your election a title.' });
+      if (title.length > LIMITS.title) {
+        return res.status(400).json({ error: `Titles are capped at ${LIMITS.title} characters.` });
+      }
+      election.title = title;
+    }
+    if (body.description !== undefined) {
+      const description = cleanBlock(body.description);
+      if (description.length > LIMITS.description) {
+        return res.status(400).json({ error: `Descriptions are capped at ${LIMITS.description} characters.` });
+      }
+      election.description = description;
+    }
+    if (body.ballotPrivacy !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!PRIVACY_MODES.includes(body.ballotPrivacy)) {
+        return res.status(400).json({ error: 'Ballot privacy must be "anonymous" or "open".' });
+      }
+      election.ballotPrivacy = body.ballotPrivacy;
+    }
+    if (body.security !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!SECURITY_MODES.includes(body.security)) {
+        return res.status(400).json({ error: 'Voter check must be "link" or "code".' });
+      }
+      election.security = body.security;
+    }
+
+    await store.saveElection(election);
+    res.json({ election: publicElection(election) });
+  });
+
+  router.post('/admin/:token/status', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    const target = req.body?.status;
+    const now = Date.now();
+
+    if (target === 'open') {
+      if (election.status === 'open') {
+        return res.status(409).json({ error: 'Voting is already open.' });
+      }
+      const questions = await questionsWithCandidates(election.id);
+      for (const question of questions) {
+        if (question.candidates.length < 2) {
+          const label = question.prompt || `Question ${question.position}`;
+          return res.status(409).json({ error: `Every question needs at least two options — “${label}” has ${question.candidates.length}.` });
+        }
+      }
+      // A voter can never rank more options than exist, and STV needs at
+      // least one non-winner; other methods elect exactly one.
+      for (const question of questions) {
+        const numRanks = Math.min(question.numRanks, question.candidates.length);
+        const numWinners =
+          question.method === 'stv'
+            ? Math.min(question.numWinners, Math.max(1, question.candidates.length - 1))
+            : 1;
+        if (numRanks !== question.numRanks || numWinners !== question.numWinners) {
+          await store.saveQuestion({ ...question, numRanks, numWinners });
+        }
+      }
+      election.status = 'open';
+      election.openedAt = election.openedAt ?? now;
+      election.closedAt = null;
+    } else if (target === 'closed') {
+      if (election.status !== 'open') {
+        return res.status(409).json({ error: 'Voting is not open.' });
+      }
+      election.status = 'closed';
+      election.closedAt = now;
+    } else if (target === 'draft') {
+      if (election.status !== 'open' || (await store.countBallots(election.id)) > 0) {
+        return res.status(409).json({ error: 'You can only return to setup while voting is open and no ballots have been cast.' });
+      }
+      election.status = 'draft';
+      election.openedAt = null;
+    } else {
+      return res.status(400).json({ error: 'Unknown status.' });
+    }
+
+    await store.saveElection(election);
+    res.json({ election: publicElection(election) });
+  });
+
+  // ---- questions (setup only) ----
+
+  router.post('/admin/:token/questions', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.status !== 'draft') {
+      return res.status(409).json({ error: 'Questions can only change during setup.' });
+    }
+    const existing = await store.listQuestions(election.id);
+    if (existing.length >= LIMITS.maxQuestions) {
+      return res.status(409).json({ error: `Elections are capped at ${LIMITS.maxQuestions} questions.` });
+    }
+    const parsed = parseQuestionSpec(req.body ?? {});
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    await store.addQuestion(election.id, parsed.question);
+    res.status(201).json({ questions: await questionsWithCandidates(election.id) });
+  });
+
+  router.patch('/admin/:token/questions/:questionId', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.status !== 'draft') {
+      return res.status(409).json({ error: 'Questions can only change during setup.' });
+    }
+    const question = await store.getQuestion(election.id, req.params.questionId);
+    if (!question) return res.status(404).json({ error: 'Question not found.' });
+
+    const parsed = parseQuestionSpec({
+      prompt: req.body?.prompt ?? question.prompt,
+      method: req.body?.method ?? question.method,
+      numRanks: req.body?.numRanks ?? question.numRanks,
+      numWinners: req.body?.numWinners ?? question.numWinners,
+    });
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    await store.saveQuestion({ ...question, ...parsed.question });
+    res.json({ questions: await questionsWithCandidates(election.id) });
+  });
+
+  router.delete('/admin/:token/questions/:questionId', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.status !== 'draft') {
+      return res.status(409).json({ error: 'Questions can only change during setup.' });
+    }
+    const existing = await store.listQuestions(election.id);
+    if (!existing.some((q) => q.id === req.params.questionId)) {
+      return res.status(404).json({ error: 'Question not found.' });
+    }
+    if (existing.length <= 1) {
+      return res.status(409).json({ error: 'An election needs at least one question.' });
+    }
+    await store.removeQuestion(election.id, req.params.questionId);
+    res.json({ questions: await questionsWithCandidates(election.id) });
+  });
+
+  router.post('/admin/:token/questions/:questionId/candidates', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.status !== 'draft') {
+      return res.status(409).json({ error: 'Options can only change during setup.' });
+    }
+    const question = await store.getQuestion(election.id, req.params.questionId);
+    if (!question) return res.status(404).json({ error: 'Question not found.' });
+    const name = cleanLine(req.body?.name);
+    if (!name) return res.status(400).json({ error: 'Give the option a name.' });
+    const existing = (await store.listCandidatesByElection(election.id))
+      .filter((c) => c.questionId === question.id)
+      .map((c) => c.name);
+    const problem = candidateListProblem([name], existing);
+    if (problem) return res.status(400).json({ error: problem });
+    await store.addCandidate(election.id, question.id, name);
+    res.status(201).json({ questions: await questionsWithCandidates(election.id) });
+  });
+
+  router.delete('/admin/:token/questions/:questionId/candidates/:candidateId', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.status !== 'draft') {
+      return res.status(409).json({ error: 'Options can only change during setup.' });
+    }
+    if (!(await store.removeCandidate(req.params.questionId, req.params.candidateId))) {
+      return res.status(404).json({ error: 'Option not found.' });
+    }
+    res.json({ questions: await questionsWithCandidates(election.id) });
+  });
+
+  // ---- ballot codes ----
 
   router.post('/admin/:token/codes', async (req, res) => {
     const election = await requireAdmin(req, res);
@@ -293,147 +531,6 @@ export function createApiRouter({ db, rateLimits = {} }) {
     res.json({ codes: await store.listCodes(election.id) });
   });
 
-  router.patch('/admin/:token', async (req, res) => {
-    const election = await requireAdmin(req, res);
-    if (!election) return;
-    const body = req.body ?? {};
-
-    if (body.title !== undefined) {
-      const title = cleanLine(body.title);
-      if (!title) return res.status(400).json({ error: 'Give your election a title.' });
-      if (title.length > LIMITS.title) {
-        return res.status(400).json({ error: `Titles are capped at ${LIMITS.title} characters.` });
-      }
-      election.title = title;
-    }
-    if (body.description !== undefined) {
-      const description = cleanBlock(body.description);
-      if (description.length > LIMITS.description) {
-        return res.status(400).json({ error: `Descriptions are capped at ${LIMITS.description} characters.` });
-      }
-      election.description = description;
-    }
-    if (body.numRanks !== undefined) {
-      if (election.status !== 'draft') {
-        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
-      }
-      if (!Number.isInteger(body.numRanks) || body.numRanks < 1 || body.numRanks > LIMITS.maxRanks) {
-        return res.status(400).json({ error: `Ranked choices per voter must be a whole number from 1 to ${LIMITS.maxRanks}.` });
-      }
-      election.numRanks = body.numRanks;
-    }
-    if (body.method !== undefined) {
-      if (election.status !== 'draft') {
-        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
-      }
-      if (!METHOD_KEYS.includes(body.method)) {
-        return res.status(400).json({ error: 'Unknown counting method.' });
-      }
-      election.method = body.method;
-    }
-    if (body.numWinners !== undefined) {
-      if (election.status !== 'draft') {
-        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
-      }
-      if (!Number.isInteger(body.numWinners) || body.numWinners < 1 || body.numWinners > LIMITS.maxWinners) {
-        return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
-      }
-      election.numWinners = body.numWinners;
-    }
-    if (body.ballotPrivacy !== undefined) {
-      if (election.status !== 'draft') {
-        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
-      }
-      if (!PRIVACY_MODES.includes(body.ballotPrivacy)) {
-        return res.status(400).json({ error: 'Ballot privacy must be "anonymous" or "open".' });
-      }
-      election.ballotPrivacy = body.ballotPrivacy;
-    }
-    if (body.security !== undefined) {
-      if (election.status !== 'draft') {
-        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
-      }
-      if (!SECURITY_MODES.includes(body.security)) {
-        return res.status(400).json({ error: 'Voter check must be "link" or "code".' });
-      }
-      election.security = body.security;
-    }
-
-    await store.saveElection(election);
-    res.json({ election: publicElection(election) });
-  });
-
-  router.post('/admin/:token/status', async (req, res) => {
-    const election = await requireAdmin(req, res);
-    if (!election) return;
-    const target = req.body?.status;
-    const now = Date.now();
-
-    if (target === 'open') {
-      if (election.status === 'open') {
-        return res.status(409).json({ error: 'Voting is already open.' });
-      }
-      const candidates = await store.listCandidates(election.id);
-      if (candidates.length < 2) {
-        return res.status(409).json({ error: 'Add at least two options before opening voting.' });
-      }
-      // A voter can never rank more options than exist, and STV needs at
-      // least one non-winner; other methods elect exactly one.
-      election.numRanks = Math.min(election.numRanks, candidates.length);
-      election.numWinners =
-        election.method === 'stv'
-          ? Math.min(election.numWinners, Math.max(1, candidates.length - 1))
-          : 1;
-      election.status = 'open';
-      election.openedAt = election.openedAt ?? now;
-      election.closedAt = null;
-    } else if (target === 'closed') {
-      if (election.status !== 'open') {
-        return res.status(409).json({ error: 'Voting is not open.' });
-      }
-      election.status = 'closed';
-      election.closedAt = now;
-    } else if (target === 'draft') {
-      if (election.status !== 'open' || (await store.countBallots(election.id)) > 0) {
-        return res.status(409).json({ error: 'You can only return to setup while voting is open and no ballots have been cast.' });
-      }
-      election.status = 'draft';
-      election.openedAt = null;
-    } else {
-      return res.status(400).json({ error: 'Unknown status.' });
-    }
-
-    await store.saveElection(election);
-    res.json({ election: publicElection(election) });
-  });
-
-  router.post('/admin/:token/candidates', async (req, res) => {
-    const election = await requireAdmin(req, res);
-    if (!election) return;
-    if (election.status !== 'draft') {
-      return res.status(409).json({ error: 'Options can only change during setup.' });
-    }
-    const name = cleanLine(req.body?.name);
-    if (!name) return res.status(400).json({ error: 'Give the option a name.' });
-    const existing = (await store.listCandidates(election.id)).map((c) => c.name);
-    const problem = candidateListProblem([name], existing);
-    if (problem) return res.status(400).json({ error: problem });
-    await store.addCandidate(election.id, name);
-    res.status(201).json({ candidates: await store.listCandidates(election.id) });
-  });
-
-  router.delete('/admin/:token/candidates/:candidateId', async (req, res) => {
-    const election = await requireAdmin(req, res);
-    if (!election) return;
-    if (election.status !== 'draft') {
-      return res.status(409).json({ error: 'Options can only change during setup.' });
-    }
-    if (!(await store.removeCandidate(election.id, req.params.candidateId))) {
-      return res.status(404).json({ error: 'Option not found.' });
-    }
-    res.json({ candidates: await store.listCandidates(election.id) });
-  });
-
   router.delete('/admin/:token', async (req, res) => {
     const election = await requireAdmin(req, res);
     if (!election) return;
@@ -463,9 +560,41 @@ function cleanBlock(value) {
   return typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
 }
 
+// Validates one question spec (from creation or question editing). Returns
+// {question, candidateNames} or {error}.
+function parseQuestionSpec(spec) {
+  if (typeof spec !== 'object' || spec === null) {
+    return { error: 'Each question needs a prompt and options.' };
+  }
+  const prompt = cleanLine(spec.prompt);
+  if (prompt.length > LIMITS.prompt) {
+    return { error: `Question prompts are capped at ${LIMITS.prompt} characters.` };
+  }
+  const method = spec.method === undefined ? 'borda' : spec.method;
+  if (!METHOD_KEYS.includes(method)) {
+    return { error: 'Unknown counting method.' };
+  }
+  const numRanks = spec.numRanks === undefined ? 3 : spec.numRanks;
+  if (!Number.isInteger(numRanks) || numRanks < 1 || numRanks > LIMITS.maxRanks) {
+    return { error: `Ranked choices per voter must be a whole number from 1 to ${LIMITS.maxRanks}.` };
+  }
+  const numWinners = spec.numWinners === undefined ? 1 : spec.numWinners;
+  if (!Number.isInteger(numWinners) || numWinners < 1 || numWinners > LIMITS.maxWinners) {
+    return { error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` };
+  }
+  const candidateNames = (Array.isArray(spec.candidates) ? spec.candidates : []).map(cleanLine).filter(Boolean);
+  const problem = candidateListProblem(candidateNames);
+  if (problem) return { error: problem };
+
+  return {
+    question: { prompt, method, numRanks, numWinners: method === 'stv' ? numWinners : 1 },
+    candidateNames,
+  };
+}
+
 function candidateListProblem(names, existing = []) {
   if (names.length + existing.length > LIMITS.maxCandidates) {
-    return `Elections are capped at ${LIMITS.maxCandidates} options.`;
+    return `Questions are capped at ${LIMITS.maxCandidates} options.`;
   }
   if (names.some((name) => name.length > LIMITS.candidateName)) {
     return `Option names are capped at ${LIMITS.candidateName} characters.`;

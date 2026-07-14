@@ -4,16 +4,16 @@ import { api, el, ordinal, plural, statusStamp, storage, toast } from './util.js
 const electionId = location.pathname.split('/')[2];
 const app = document.getElementById('app');
 
-let data = null; // { election, candidates, ballotCount, hasVoted }
-let ranked = []; // candidate ids, best first
-let submittedNames = null; // recap of the ballot just cast
+let data = null; // { election, questions, ballotCount, hasVoted }
+let answers = {}; // questionId -> [candidateId, ...] best first
+let submittedRecap = null; // [{label, names}] for the ballot just cast
 let voterName = '';
 let ballotCode = new URLSearchParams(location.search).get('code') ?? '';
 let codeStatus = null; // pre-checked {ok, label?/reason?} for the code above
 let forceBallot = false; // "vote with a different code" on a shared device
 let pollTimer = null;
 let pendingFocus = null;
-let dragFrom = null;
+let dragFrom = null; // { questionId, index }
 
 init();
 
@@ -35,8 +35,16 @@ async function init() {
   render();
 }
 
-function nameOf(id) {
-  return data.candidates.find((c) => c.id === id)?.name ?? '—';
+function candidateName(id) {
+  for (const question of data.questions) {
+    const hit = question.candidates.find((c) => c.id === id);
+    if (hit) return hit.name;
+  }
+  return '—';
+}
+
+function questionLabel(question, index) {
+  return question.prompt || `Question ${index + 1}`;
 }
 
 function render() {
@@ -46,7 +54,7 @@ function render() {
 
   const { status } = data.election;
   if (status === 'draft') renderNotOpen();
-  else if (submittedNames) renderCast(true);
+  else if (submittedRecap) renderCast(true);
   else if (data.hasVoted && !forceBallot) renderCast(false);
   else if (status === 'closed') renderClosed();
   else renderBallot();
@@ -61,7 +69,7 @@ function render() {
 
 function schedulePoll() {
   const { status } = data.election;
-  const waiting = status === 'draft' || (status === 'open' && (data.hasVoted || submittedNames));
+  const waiting = status === 'draft' || (status === 'open' && (data.hasVoted || submittedRecap) && !forceBallot);
   if (!waiting) return;
   pollTimer = setTimeout(async () => {
     try {
@@ -78,9 +86,13 @@ function schedulePoll() {
 }
 
 function renderHead() {
-  const { election, ballotCount } = data;
-  const methodName = methodByKey[election.method]?.name ?? election.method;
-  const seats = election.method === 'stv' ? ` · electing ${election.numWinners}` : '';
+  const { election, questions, ballotCount } = data;
+  const single = questions.length === 1;
+  const counted = single
+    ? `Counted by ${methodByKey[questions[0].method]?.name ?? questions[0].method}${
+        questions[0].method === 'stv' ? ` · electing ${questions[0].numWinners}` : ''
+      }`
+    : `${questions.length} questions`;
   const privacy = election.ballotPrivacy === 'open' ? 'open ballots' : 'secret ballot';
   const security = election.security === 'code' ? ' · ballot codes required' : '';
   app.append(
@@ -91,7 +103,7 @@ function renderHead() {
       election.description && el('p', { class: 'desc', text: election.description }),
       el('p', {
         class: 'count-line',
-        text: `Counted by ${methodName}${seats} · ${privacy}${security} · ${plural(ballotCount, 'ballot')} cast so far`,
+        text: `${counted} · ${privacy}${security} · ${plural(ballotCount, 'ballot')} cast so far`,
       }),
     ),
   );
@@ -100,39 +112,11 @@ function renderHead() {
 // ---- the ballot ----
 
 function renderBallot() {
-  const { election, candidates } = data;
-  const max = Math.min(election.numRanks, candidates.length);
-  const unranked = candidates.filter((c) => !ranked.includes(c.id));
-
-  const slots = el('ol', { class: 'slots', 'aria-label': 'Your ranking' });
-  for (let i = 0; i < max; i += 1) {
-    slots.append(ranked[i] ? filledSlot(i) : emptySlot(i));
-  }
-
-  const chips = el(
-    'div',
-    { class: 'chips' },
-    unranked.map((c) =>
-      el(
-        'button',
-        {
-          class: 'chip',
-          type: 'button',
-          disabled: ranked.length >= max,
-          onclick: () => {
-            if (ranked.length < max) {
-              ranked.push(c.id);
-              render();
-            }
-          },
-        },
-        c.name,
-      ),
-    ),
-  );
-
+  const { election, questions } = data;
   const isOpen = election.ballotPrivacy === 'open';
   const needsCode = election.security === 'code';
+  const multi = questions.length > 1;
+
   const nameInput = el('input', {
     type: 'text',
     maxlength: '80',
@@ -174,11 +158,12 @@ function renderBallot() {
 
   const submitBtn = el('button', { class: 'btn accent', type: 'button', onclick: submit });
   function updateSubmit() {
+    const rankedCount = Object.values(answers).reduce((sum, list) => sum + list.length, 0);
     const missingCode = needsCode && !ballotCode.trim();
     const unsigned = isOpen && !voterName.trim();
-    submitBtn.disabled = ranked.length === 0 || missingCode || unsigned;
+    submitBtn.disabled = rankedCount === 0 || missingCode || unsigned;
     submitBtn.textContent =
-      ranked.length === 0
+      rankedCount === 0
         ? 'Rank at least one option'
         : missingCode
           ? 'Enter your ballot code'
@@ -186,7 +171,8 @@ function renderBallot() {
             ? 'Sign your ballot to cast it'
             : 'Cast my ballot';
   }
-  updateSubmit();
+
+  const sections = questions.map((question, index) => renderQuestionSection(question, index, multi));
 
   app.append(
     el(
@@ -206,18 +192,7 @@ function renderBallot() {
       el(
         'div',
         { class: 'ballot-body' },
-        el('p', {
-          class: 'ballot-instruction',
-          text: `${
-            max === 1
-              ? 'Pick your one choice by tapping it below.'
-              : `Rank up to ${max} of the ${candidates.length} options — tap to add, drag or use the arrows to reorder.`
-          } ${methodByKey[election.method]?.voterLine({ numRanks: max, numWinners: election.numWinners }) ?? ''}`,
-        }),
-        slots,
-        unranked.length > 0
-          ? chips
-          : el('p', { class: 'ballot-instruction', text: 'All options ranked — remove one if you want to swap.' }),
+        sections,
         el(
           'div',
           { class: 'ballot-foot' },
@@ -242,136 +217,200 @@ function renderBallot() {
             }),
           ),
           submitBtn,
-          el('span', { class: 'hint', text: 'One ballot per browser. Results stay sealed until the organizer closes voting.' }),
+          el('span', { class: 'hint', text: 'One ballot per person. Results stay sealed until the organizer closes voting.' }),
         ),
       ),
     ),
   );
-}
+  updateSubmit();
 
-function filledSlot(i) {
-  const id = ranked[i];
-  const name = nameOf(id);
-  const li = el(
-    'li',
-    { class: 'slot filled', draggable: 'true', dataset: { index: String(i) } },
-    el('span', { class: 'rank-badge', 'aria-hidden': 'true', text: String(i + 1) }),
-    el('span', { class: 'slot-name', text: name }),
-    el(
-      'span',
-      { class: 'slot-controls' },
-      el(
-        'button',
-        {
-          class: 'icon-btn',
-          type: 'button',
-          'aria-label': `Move ${name} up`,
-          disabled: i === 0,
-          dataset: { focus: `up-${id}` },
-          onclick: () => {
-            pendingFocus = `up-${id}`;
-            move(i, i - 1);
-          },
-        },
-        '↑',
-      ),
-      el(
-        'button',
-        {
-          class: 'icon-btn',
-          type: 'button',
-          'aria-label': `Move ${name} down`,
-          disabled: i === ranked.length - 1,
-          dataset: { focus: `down-${id}` },
-          onclick: () => {
-            pendingFocus = `down-${id}`;
-            move(i, i + 1);
-          },
-        },
-        '↓',
-      ),
-      el(
-        'button',
-        {
-          class: 'icon-btn',
-          type: 'button',
-          'aria-label': `Remove ${name} from your ranking`,
-          onclick: () => {
-            ranked.splice(i, 1);
-            render();
-          },
-        },
-        '✕',
-      ),
-    ),
-  );
+  function renderQuestionSection(question, index, showHeading) {
+    const ranked = answers[question.id] ?? (answers[question.id] = []);
+    const max = Math.min(question.numRanks, question.candidates.length);
+    const unranked = question.candidates.filter((c) => !ranked.includes(c.id));
 
-  li.addEventListener('dragstart', (e) => {
-    dragFrom = i;
-    li.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(i));
-  });
-  li.addEventListener('dragend', () => {
-    dragFrom = null;
-    for (const n of app.querySelectorAll('.drop-target, .dragging')) {
-      n.classList.remove('drop-target', 'dragging');
+    const slots = el('ol', { class: 'slots', 'aria-label': `Your ranking for ${questionLabel(question, index)}` });
+    for (let i = 0; i < max; i += 1) {
+      slots.append(ranked[i] ? filledSlot(question, i) : emptySlot(question, i));
     }
-  });
-  attachDropTarget(li);
-  return li;
-}
 
-function emptySlot(i) {
-  const li = el(
-    'li',
-    { class: 'slot', dataset: { index: String(i) } },
-    el('span', { class: 'rank-badge', 'aria-hidden': 'true', text: String(i + 1) }),
-    el('span', {}, `${ordinal(i + 1)} choice`),
-  );
-  attachDropTarget(li);
-  return li;
-}
+    const instruction =
+      max === 1
+        ? 'Pick your one choice by tapping it below.'
+        : `Rank up to ${max} of the ${question.candidates.length} options — tap to add, drag or use the arrows to reorder.`;
+    const methodLine = methodByKey[question.method]?.voterLine({ numRanks: max, numWinners: question.numWinners }) ?? '';
+    const skipLine = showHeading ? ' Leave it blank to skip this question.' : '';
 
-function attachDropTarget(li) {
-  li.addEventListener('dragover', (e) => {
-    if (dragFrom == null) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    li.classList.add('drop-target');
-  });
-  li.addEventListener('dragleave', () => li.classList.remove('drop-target'));
-  li.addEventListener('drop', (e) => {
-    e.preventDefault();
-    if (dragFrom == null) return;
-    const to = Math.min(Number(li.dataset.index), ranked.length - 1);
-    move(dragFrom, to);
-  });
-}
-
-function move(from, to) {
-  if (to < 0 || to >= ranked.length || from === to) {
-    render();
-    return;
+    return el(
+      'div',
+      { class: 'ballot-question' },
+      (showHeading || question.prompt) &&
+        el('h2', { class: 'question-prompt', text: questionLabel(question, index) }),
+      el('p', { class: 'ballot-instruction', text: `${instruction} ${methodLine}${skipLine}` }),
+      slots,
+      unranked.length > 0
+        ? el(
+            'div',
+            { class: 'chips' },
+            unranked.map((c) =>
+              el(
+                'button',
+                {
+                  class: 'chip',
+                  type: 'button',
+                  disabled: ranked.length >= max,
+                  onclick: () => {
+                    if (ranked.length < max) {
+                      ranked.push(c.id);
+                      render();
+                    }
+                  },
+                },
+                c.name,
+              ),
+            ),
+          )
+        : el('p', { class: 'ballot-instruction', text: 'All options ranked — remove one if you want to swap.' }),
+    );
   }
-  const [id] = ranked.splice(from, 1);
-  ranked.splice(to, 0, id);
-  render();
+
+  function filledSlot(question, i) {
+    const ranked = answers[question.id];
+    const id = ranked[i];
+    const name = candidateName(id);
+    const li = el(
+      'li',
+      { class: 'slot filled', draggable: 'true', dataset: { index: String(i), question: question.id } },
+      el('span', { class: 'rank-badge', 'aria-hidden': 'true', text: String(i + 1) }),
+      el('span', { class: 'slot-name', text: name }),
+      el(
+        'span',
+        { class: 'slot-controls' },
+        el(
+          'button',
+          {
+            class: 'icon-btn',
+            type: 'button',
+            'aria-label': `Move ${name} up`,
+            disabled: i === 0,
+            dataset: { focus: `up-${id}` },
+            onclick: () => {
+              pendingFocus = `up-${id}`;
+              move(question.id, i, i - 1);
+            },
+          },
+          '↑',
+        ),
+        el(
+          'button',
+          {
+            class: 'icon-btn',
+            type: 'button',
+            'aria-label': `Move ${name} down`,
+            disabled: i === ranked.length - 1,
+            dataset: { focus: `down-${id}` },
+            onclick: () => {
+              pendingFocus = `down-${id}`;
+              move(question.id, i, i + 1);
+            },
+          },
+          '↓',
+        ),
+        el(
+          'button',
+          {
+            class: 'icon-btn',
+            type: 'button',
+            'aria-label': `Remove ${name} from your ranking`,
+            onclick: () => {
+              ranked.splice(i, 1);
+              render();
+            },
+          },
+          '✕',
+        ),
+      ),
+    );
+
+    li.addEventListener('dragstart', (e) => {
+      dragFrom = { questionId: question.id, index: i };
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(i));
+    });
+    li.addEventListener('dragend', () => {
+      dragFrom = null;
+      for (const n of app.querySelectorAll('.drop-target, .dragging')) {
+        n.classList.remove('drop-target', 'dragging');
+      }
+    });
+    attachDropTarget(li, question.id);
+    return li;
+  }
+
+  function emptySlot(question, i) {
+    const li = el(
+      'li',
+      { class: 'slot', dataset: { index: String(i), question: question.id } },
+      el('span', { class: 'rank-badge', 'aria-hidden': 'true', text: String(i + 1) }),
+      el('span', {}, `${ordinal(i + 1)} choice`),
+    );
+    attachDropTarget(li, question.id);
+    return li;
+  }
+
+  function attachDropTarget(li, questionId) {
+    li.addEventListener('dragover', (e) => {
+      if (dragFrom?.questionId !== questionId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      li.classList.add('drop-target');
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drop-target'));
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (dragFrom?.questionId !== questionId) return;
+      const ranked = answers[questionId];
+      const to = Math.min(Number(li.dataset.index), ranked.length - 1);
+      move(questionId, dragFrom.index, to);
+    });
+  }
+
+  function move(questionId, from, to) {
+    const ranked = answers[questionId];
+    if (to < 0 || to >= ranked.length || from === to) {
+      render();
+      return;
+    }
+    const [id] = ranked.splice(from, 1);
+    ranked.splice(to, 0, id);
+    render();
+  }
 }
 
 async function submit(event) {
   const btn = event.currentTarget;
   btn.disabled = true;
+  const cleanAnswers = Object.fromEntries(
+    Object.entries(answers).filter(([, list]) => list.length > 0),
+  );
   try {
     await api(`/api/elections/${electionId}/ballots`, {
       method: 'POST',
       body: {
-        rankings: ranked,
+        answers: cleanAnswers,
         voterName: voterName.trim() || undefined,
         ...(data.election.security === 'code' ? { code: ballotCode } : {}),
       },
     });
-    submittedNames = ranked.map(nameOf);
+    const multi = data.questions.length > 1;
+    submittedRecap = data.questions
+      .map((question, index) =>
+        cleanAnswers[question.id]
+          ? { label: multi ? questionLabel(question, index) : null, names: cleanAnswers[question.id].map(candidateName) }
+          : null,
+      )
+      .filter(Boolean);
     storage.markVoted(electionId, data.election.title);
     data.hasVoted = true;
     data.ballotCount += 1;
@@ -405,12 +444,19 @@ function renderCast(withRecap) {
       }),
       data.election.ballotPrivacy === 'open' &&
         el('p', { text: 'This was an open ballot — your name and ranking appear on the public record with the results.' }),
-      withRecap && submittedNames
-        ? el(
-            'ol',
-            { class: 'recap', 'aria-label': 'Your ranking' },
-            submittedNames.map((name, i) =>
-              el('li', {}, el('span', { class: 'rank-badge', text: String(i + 1) }), name),
+      withRecap && submittedRecap
+        ? submittedRecap.map((entry) =>
+            el(
+              'div',
+              { class: 'recap-group' },
+              entry.label && el('p', { class: 'recap-label', text: entry.label }),
+              el(
+                'ol',
+                { class: 'recap', 'aria-label': entry.label ?? 'Your ranking' },
+                entry.names.map((name, i) =>
+                  el('li', {}, el('span', { class: 'rank-badge', text: String(i + 1) }), name),
+                ),
+              ),
             ),
           )
         : null,
@@ -431,8 +477,8 @@ function renderCast(withRecap) {
               type: 'button',
               onclick: () => {
                 forceBallot = true;
-                submittedNames = null;
-                ranked = [];
+                submittedRecap = null;
+                answers = {};
                 ballotCode = '';
                 codeStatus = null;
                 voterName = '';
@@ -465,7 +511,7 @@ function renderClosed() {
       { class: 'card panel rise', style: '--i:1' },
       el('span', { class: 'stamp closed', text: 'Voting closed' }),
       el('h2', { text: 'Voting has ended.' }),
-      el('p', { text: 'This election is decided — head over to see how the runoff played out.' }),
+      el('p', { text: 'This election is decided — head over to see how it played out.' }),
       el('div', { class: 'btn-row' }, el('a', { class: 'btn accent', href: `/e/${electionId}/results`, text: 'See the results' })),
     ),
   );

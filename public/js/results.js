@@ -64,12 +64,45 @@ function renderSealed(info) {
 function renderFull(results) {
   app.replaceChildren(head(results.election.status, results.totalBallots, results.turnout));
   const body = el('div', { class: 'rise', style: '--i:1' });
-  body.append(renderResults(results));
+
+  const multi = results.questions.length > 1;
+  results.questions.forEach((entry, index) => {
+    if (multi || entry.question.prompt) {
+      body.append(el('h2', { class: 'question-heading', text: entry.question.prompt || `Question ${index + 1}` }));
+    }
+    if (multi) {
+      body.append(
+        el('p', {
+          class: 'count-line',
+          style: 'margin-bottom:1rem',
+          text: `${entry.answered} of ${plural(results.totalBallots, 'ballot')} answered this question`,
+        }),
+      );
+    }
+    const holder = el('div', { class: 'question-results' });
+    holder.append(
+      renderResults({
+        official: entry.official,
+        results: entry.results,
+        candidates: entry.candidates,
+        totalBallots: entry.answered,
+        election: results.election,
+      }),
+    );
+    body.append(holder);
+  });
+
   if (results.ballots) {
     body.append(
-      renderSignedBallots(results.ballots, results.candidates, {
-        sub: 'This election used open ballots — every vote is on the record.',
-      }),
+      renderSignedBallots(
+        results.ballots,
+        results.questions.map((entry) => ({
+          id: entry.question.id,
+          prompt: entry.question.prompt,
+          candidates: entry.candidates,
+        })),
+        { sub: 'This election used open ballots — every vote is on the record.' },
+      ),
     );
   }
   app.append(body);
