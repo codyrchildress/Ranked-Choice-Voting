@@ -2,7 +2,7 @@
 // the election's official method first, the rest as "what if?" views over
 // the same ballots. Used by the public results page and the admin tally.
 
-import { el, ordinal, pct, plural } from './util.js';
+import { el, ordinal, pct, plural, timeString } from './util.js';
 import { METHODS, methodByKey } from './methods.js';
 
 export function renderResults(payload, { live = false } = {}) {
@@ -434,6 +434,37 @@ function scoringNote(numRanks) {
 
 function fmtV(x) {
   return Number.isInteger(x) ? String(x) : String(Math.round(x * 100) / 100);
+}
+
+// The public record for open-ballot elections: every signed ballot in full.
+export function renderSignedBallots(ballots, candidates, { title = 'The public record', sub } = {}) {
+  const names = new Map(candidates.map((c) => [c.id, c.name]));
+  return el(
+    'section',
+    { class: 'card standings-card', style: 'margin-top:1.3rem' },
+    el('h2', { text: `${title} (${ballots.length})` }),
+    sub && el('p', { class: 'card-sub', text: sub }),
+    el(
+      'ol',
+      { class: 'open-ballots' },
+      ballots.map((ballot) =>
+        el(
+          'li',
+          {},
+          el(
+            'span',
+            { class: 'who' },
+            el('span', { text: ballot.name ?? '—' }),
+            el('span', { class: 'when', text: timeString(ballot.createdAt) }),
+          ),
+          el('span', {
+            class: 'order',
+            text: ballot.rankings.map((id, i) => `${i + 1}. ${names.get(id) ?? '—'}`).join('  →  '),
+          }),
+        ),
+      ),
+    ),
+  );
 }
 
 // Kick off the grow-in animation once rendered bars are in the document.

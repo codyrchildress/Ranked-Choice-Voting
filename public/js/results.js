@@ -1,5 +1,5 @@
 import { api, el, plural, statusStamp } from './util.js';
-import { animateBars, renderResults } from './results-render.js';
+import { animateBars, renderResults, renderSignedBallots } from './results-render.js';
 
 const electionId = location.pathname.split('/')[2];
 const app = document.getElementById('app');
@@ -31,12 +31,13 @@ async function load() {
   }
 }
 
-function head(status, ballotCount) {
+function head(status, ballotCount, turnout) {
+  const turnoutNote = turnout ? ` · ${turnout.used} of ${plural(turnout.total, 'ballot code')} used` : '';
   return el(
     'div',
     { class: 'page-head rise' },
     el('div', {}, el('h1', { text: pub.election.title }), statusStamp(status)),
-    el('p', { class: 'count-line', text: `${plural(ballotCount, 'ballot')} cast` }),
+    el('p', { class: 'count-line', text: `${plural(ballotCount, 'ballot')} cast${turnoutNote}` }),
     el('p', {}, el('a', { href: `/e/${electionId}`, text: '← Back to the ballot' })),
   );
 }
@@ -61,9 +62,16 @@ function renderSealed(info) {
 }
 
 function renderFull(results) {
-  app.replaceChildren(head(results.election.status, results.totalBallots));
+  app.replaceChildren(head(results.election.status, results.totalBallots, results.turnout));
   const body = el('div', { class: 'rise', style: '--i:1' });
   body.append(renderResults(results));
+  if (results.ballots) {
+    body.append(
+      renderSignedBallots(results.ballots, results.candidates, {
+        sub: 'This election used open ballots — every vote is on the record.',
+      }),
+    );
+  }
   app.append(body);
   animateBars(app);
 }

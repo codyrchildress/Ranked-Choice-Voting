@@ -676,6 +676,18 @@ textarea {
   vertical-align: 1px;
 }
 
+.ballot-privacy {
+  font: 600 0.66rem/1.5 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0.5rem 0 0;
+}
+
+.ballot-privacy.open {
+  color: var(--accent-deep);
+}
+
 .ballot-body {
   padding: 1.4rem 1.5rem 1.6rem;
   border-top: 3px solid var(--ink);
@@ -1196,6 +1208,100 @@ textarea {
 .stamp.hypo-stamp {
   color: var(--ink-soft);
   border-style: dashed;
+}
+
+/* ---- ballot codes ----------------------------------------------------- */
+
+.code-list {
+  list-style: none;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.code-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.code-list .code {
+  font: 600 0.82rem/1.4 var(--font-mono);
+  letter-spacing: 0.05em;
+}
+
+.code-list .label {
+  font-weight: 600;
+}
+
+.code-list .meta {
+  margin-left: auto;
+  font: 400 0.72rem/1.6 var(--font-mono);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.code-list li.used {
+  opacity: 0.55;
+}
+
+.code-list li.used .code {
+  text-decoration: line-through;
+}
+
+.code-ok {
+  color: var(--win);
+  font-weight: 600;
+}
+
+.code-bad {
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+/* ---- open-ballot public record --------------------------------------- */
+
+.open-ballots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.open-ballots li {
+  display: grid;
+  gap: 0.15rem;
+  border-bottom: 1px dotted var(--line);
+  padding-bottom: 0.6rem;
+}
+
+.open-ballots .who {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.open-ballots .who .when {
+  font: 400 0.75rem/1.6 var(--font-mono);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.open-ballots .order {
+  font: 500 0.78rem/1.6 var(--font-mono);
+  color: var(--ink-soft);
 }
 
 /* ---- head-to-head matchup grid (Condorcet) -------------------------- */

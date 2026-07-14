@@ -241,6 +241,8 @@ test('election lifecycle', async (t) => {
       assert.ok(results.data.results[key].winners.length >= 1, key);
     }
     assert.equal(results.data.totalBallots, 5);
+    // Anonymous elections never publish signed ballots.
+    assert.equal(results.data.ballots, undefined);
   });
 
   await t.test('reopening seals results again', async () => {
@@ -375,6 +377,192 @@ test('counting methods are validated, locked after setup, and STV seats clamp', 
   assert.equal(results.data.official, 'stv');
   assert.equal(results.data.results.stv.seats, 2);
   assert.equal(results.data.results.stv.winners.length, 2);
+});
+
+test('open-ballot elections require signatures and publish them', async (t) => {
+  const { request } = await startServer(t);
+
+  const bad = await request('/api/elections', {
+    method: 'POST',
+    body: { title: 'X', numRanks: 2, ballotPrivacy: 'secretish', candidates: ['A', 'B'] },
+  });
+  assert.equal(bad.status, 400);
+
+  const created = await request('/api/elections', {
+    method: 'POST',
+    body: {
+      title: 'Board vote',
+      numRanks: 2,
+      method: 'irv',
+      ballotPrivacy: 'open',
+      candidates: ['Approve', 'Reject'],
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.election.ballotPrivacy, 'open');
+  const admin = created.data.adminToken;
+  const id = created.data.election.id;
+
+  // Voters can see the privacy mode before and while voting.
+  const pub = await request(`/api/elections/${id}`);
+  assert.equal(pub.data.election.ballotPrivacy, 'open');
+  const approve = pub.data.candidates.find((c) => c.name === 'Approve').id;
+
+  await request(`/api/admin/${admin}/status`, { method: 'POST', body: { status: 'open' } });
+
+  // No signature, no ballot.
+  const unsigned = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [approve] },
+  });
+  assert.equal(unsigned.status, 400);
+  assert.match(unsigned.data.error, /open ballots/);
+  const blank = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [approve], voterName: '   ' },
+  });
+  assert.equal(blank.status, 400);
+
+  const signed = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [approve], voterName: 'Ada' },
+  });
+  assert.equal(signed.status, 201);
+
+  // Privacy is a ballot rule: locked while voting is open.
+  const patch = await request(`/api/admin/${admin}`, {
+    method: 'PATCH',
+    body: { ballotPrivacy: 'anonymous' },
+  });
+  assert.equal(patch.status, 409);
+
+  // The admin sees signed ballots live; the public sees them once closed.
+  const adminView = await request(`/api/admin/${admin}`);
+  assert.equal(adminView.data.ballots.length, 1);
+  assert.equal(adminView.data.ballots[0].name, 'Ada');
+  assert.deepEqual(adminView.data.ballots[0].rankings, [approve]);
+
+  await request(`/api/admin/${admin}/status`, { method: 'POST', body: { status: 'closed' } });
+  const results = await request(`/api/elections/${id}/results`);
+  assert.equal(results.data.ballots.length, 1);
+  assert.equal(results.data.ballots[0].name, 'Ada');
+  assert.deepEqual(results.data.ballots[0].rankings, [approve]);
+});
+
+test('code-secured elections enforce one ballot per code', async (t) => {
+  const { request } = await startServer(t);
+
+  const bad = await request('/api/elections', {
+    method: 'POST',
+    body: { title: 'X', numRanks: 2, security: 'vibes', candidates: ['A', 'B'] },
+  });
+  assert.equal(bad.status, 400);
+
+  const created = await request('/api/elections', {
+    method: 'POST',
+    body: { title: 'Secure vote', numRanks: 2, security: 'code', candidates: ['A', 'B'] },
+  });
+  assert.equal(created.data.election.security, 'code');
+  const admin = created.data.adminToken;
+  const id = created.data.election.id;
+
+  // Code generation validates its input and honors labels.
+  assert.equal((await request(`/api/admin/${admin}/codes`, { method: 'POST', body: {} })).status, 400);
+  assert.equal(
+    (await request(`/api/admin/${admin}/codes`, { method: 'POST', body: { count: 101 } })).status,
+    400,
+  );
+  const generated = await request(`/api/admin/${admin}/codes`, {
+    method: 'POST',
+    body: { count: 2 },
+  });
+  assert.equal(generated.status, 201);
+  const named = await request(`/api/admin/${admin}/codes`, {
+    method: 'POST',
+    body: { labels: ['Priya', 'Marcus'] },
+  });
+  assert.equal(named.data.codes.length, 4);
+  assert.ok(named.data.codes.some((c) => c.label === 'Priya'));
+
+  // Link-mode elections refuse code generation.
+  const linkElection = await request('/api/elections', {
+    method: 'POST',
+    body: { title: 'Casual', numRanks: 1, candidates: ['A', 'B'] },
+  });
+  assert.equal(
+    (await request(`/api/admin/${linkElection.data.adminToken}/codes`, { method: 'POST', body: { count: 1 } })).status,
+    409,
+  );
+
+  await request(`/api/admin/${admin}/status`, { method: 'POST', body: { status: 'open' } });
+
+  // Security is a ballot rule: locked while voting is open.
+  assert.equal(
+    (await request(`/api/admin/${admin}`, { method: 'PATCH', body: { security: 'link' } })).status,
+    409,
+  );
+
+  const pub = await request(`/api/elections/${id}`);
+  assert.equal(pub.data.election.security, 'code');
+  const optionA = pub.data.candidates[0].id;
+  const priya = named.data.codes.find((c) => c.label === 'Priya');
+  const marcus = named.data.codes.find((c) => c.label === 'Marcus');
+  const [blankOne, blankTwo] = named.data.codes.filter((c) => !c.label);
+
+  // The status endpoint answers before anyone fills out a ballot.
+  const fresh = await request(`/api/elections/${id}/codes/${priya.code}`);
+  assert.deepEqual(fresh.data, { ok: true, label: 'Priya' });
+  const bogus = await request(`/api/elections/${id}/codes/not-a-code`);
+  assert.deepEqual(bogus.data, { ok: false, reason: 'invalid' });
+
+  // No code, wrong code, then a real vote (dashes and caps are forgiven).
+  const noCode = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [optionA] },
+  });
+  assert.equal(noCode.status, 400);
+  const wrong = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [optionA], code: 'zzzzzzzzz' },
+  });
+  assert.equal(wrong.status, 400);
+  const decorated = `${blankOne.code.slice(0, 3)}-${blankOne.code.slice(3, 6)}-${blankOne.code.slice(6)}`.toUpperCase();
+  const voted = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [optionA], code: decorated },
+  });
+  assert.equal(voted.status, 201);
+
+  // The same code cannot vote twice…
+  const reuse = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [optionA], code: blankOne.code },
+  });
+  assert.equal(reuse.status, 409);
+  assert.match(reuse.data.error, /already been used/);
+  const usedStatus = await request(`/api/elections/${id}/codes/${blankOne.code}`);
+  assert.deepEqual(usedStatus.data, { ok: false, reason: 'used' });
+
+  // …but a second person on the same browser (voted cookie set) can, with
+  // their own code.
+  const sharedDevice = await request(`/api/elections/${id}/ballots`, {
+    method: 'POST',
+    body: { rankings: [optionA], code: blankTwo.code },
+    cookie: `rcv_voted_${id}=1`,
+  });
+  assert.equal(sharedDevice.status, 201);
+
+  // Revocation: unused codes only.
+  const revokeUsed = await request(`/api/admin/${admin}/codes/${blankOne.id}`, { method: 'DELETE' });
+  assert.equal(revokeUsed.status, 409);
+  const revokeFresh = await request(`/api/admin/${admin}/codes/${marcus.id}`, { method: 'DELETE' });
+  assert.equal(revokeFresh.status, 200);
+  assert.equal(revokeFresh.data.codes.length, 3);
+
+  // Turnout counts appear with the published results.
+  await request(`/api/admin/${admin}/status`, { method: 'POST', body: { status: 'closed' } });
+  const results = await request(`/api/elections/${id}/results`);
+  assert.deepEqual(results.data.turnout, { total: 3, used: 2 });
 });
 
 test('malformed JSON gets a 400, unknown API routes a 404', async (t) => {

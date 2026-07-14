@@ -2,8 +2,9 @@
 
 A small, self-hosted web app for holding **ranked elections** with a team, club, or friend group — counted by your choice of five methods.
 
-- **Create an election** — add the options, pick the counting method (instant-runoff, STV, Borda, Condorcet, or contingent), and choose how many ranked choices each voter gets (top 3, top 5, …).
-- **Share one link** — anyone with the voter link casts one ballot. No accounts, no sign-ins.
+- **Create an election** — add the options, pick the counting method (instant-runoff, STV, Borda, Condorcet, or contingent), choose how many ranked choices each voter gets (top 3, top 5, …), and pick the ballot privacy: **secret** (default) or **open ballots**, where voters sign their ballot and every name and ranking is published with the results.
+- **Share one link** — anyone with the voter link casts one ballot. No accounts, no sign-ins. The ballot itself tells voters whether the election is secret or on the record.
+- **Or hold a secure election** — switch the voter check to **one-time ballot codes**: generate single-use codes on the admin page (optionally labeled with names) and hand them out as personal links. Exactly one ballot per code, enforced server-side.
 - **Results stay sealed** until the organizer closes voting; then the official count goes public — along with a "what if?" view recounting the same ballots under every other method, just for fun.
 
 Elections are unlisted (random URLs) and each one is managed through a private **admin link** generated at creation time — there are no user accounts to run.
@@ -43,8 +44,8 @@ The engines live in [server/methods/](server/methods/) (one file per method, eac
 
 | Status | Voters see | Admin can |
 |---|---|---|
-| **In setup** | "Not open yet" | Edit title/description, add/remove options, change the counting method, seats (STV), and ranks per voter |
-| **Voting open** | The ballot | Watch a private live tally (all five methods), close voting, or return to setup while no ballots exist |
+| **In setup** | "Not open yet" | Edit title/description, add/remove options, change the counting method, seats (STV), ranks per voter, ballot privacy, and voter check |
+| **Voting open** | The ballot | Watch a private live tally (all five methods), manage ballot codes (generate more, revoke unused), close voting, or return to setup while no ballots exist |
 | **Closed** | Results | Reopen voting (seals results again), delete the election |
 
 Ranks per voter are clamped to the number of options when voting opens, and STV seats are clamped below the option count. Options and counting rules are locked while voting is open so every ballot is cast under the same rules.
@@ -97,9 +98,10 @@ docker run -p 3000:3000 -v runoff-data:/data runoff
 
 This is a tool for **casual, good-faith elections** (team decisions, club votes, friend groups):
 
-- **One ballot per browser** is enforced with a cookie. A determined person can clear cookies or use another browser to vote again. Voter names are optional and unverified.
+- **One ballot per browser** (the default, link-shared mode) is enforced with a cookie. A determined person can clear cookies or use another browser to vote again. Voter names are unverified — in an open-ballot election, anyone could sign someone else's name, so open ballots rely on the same good faith as a show of hands.
+- **Secure mode: one-time ballot codes.** Switching the voter check to codes makes "one person, one vote" real: each code is claimed atomically by exactly one ballot, invalid or reused codes are rejected, and the browser cookie stops being the gate (so two people can share a device). Codes are bearer tokens, like paper tickets — whoever holds one can vote with it — and the admin page stores them in plain text so the organizer can re-copy them. Codes are never linked to the ballot they cast, so labeled codes don't compromise a secret ballot.
 - **Admin power is a secret link.** Anyone who has the admin URL controls the election; if you lose it, it cannot be recovered.
-- Ballot rankings are stored anonymously; optional voter names are shown only on the admin page (as a turnout roster, not linked to rankings in the UI).
+- **Ballot privacy is per-election and locked once voting opens.** Secret ballots (default): rankings are never linked to names in any view; an optional name feeds only the organizer's turnout roster. Open ballots: voters must sign, and every name and full ranking is published with the results (the admin sees them live). The ballot page states which mode applies before anyone votes.
 - Anyone who can reach the site can create elections. To restrict who can *host* elections, put the whole app behind an auth proxy (Cloudflare Access, Tailscale, basic auth) — voters and admins are unaffected since links carry the access.
 
 Hardening ideas if you outgrow this: per-voter one-time ballot codes, email verification, or real accounts.
@@ -110,10 +112,12 @@ All endpoints are JSON under `/api`. The interesting ones:
 
 | Method & path | What it does |
 |---|---|
-| `POST /api/elections` | Create (`{title, description?, numRanks, method?, numWinners?, candidates[]}`) → returns the one-time `adminToken` |
+| `POST /api/elections` | Create (`{title, description?, numRanks, method?, numWinners?, ballotPrivacy?, security?, candidates[]}`) → returns the one-time `adminToken` |
 | `GET /api/elections/:id` | Public election info + your voted status |
-| `POST /api/elections/:id/ballots` | Cast `{rankings: [candidateId…], voterName?}` (only while open) |
-| `GET /api/elections/:id/results` | The official result plus recounts under all five methods — `403` until the election closes |
+| `POST /api/elections/:id/ballots` | Cast `{rankings: [candidateId…], voterName?, code?}` (only while open; `code` required for code-secured elections) |
+| `GET /api/elections/:id/codes/:code` | Pre-check a ballot code: `{ok, label?}` or `{ok: false, reason: "used"\|"invalid"}` |
+| `POST /api/admin/:token/codes` · `DELETE …/codes/:codeId` | Generate codes (`{count}` or `{labels: [name…]}`) · revoke an unused code |
+| `GET /api/elections/:id/results` | The official result plus recounts under all five methods (and the signed ballots, for open-ballot elections) — `403` until the election closes |
 | `GET /api/admin/:token` | Everything, including the live tally and voter roster |
 | `POST /api/admin/:token/status` | `{status: "open" \| "closed" \| "draft"}` transitions |
 | `PATCH /api/admin/:token` | Edit title/description (anytime); numRanks, method, numWinners (setup only) |

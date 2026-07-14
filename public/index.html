@@ -94,6 +94,44 @@
             <select id="num-ranks" name="numRanks"></select>
             <span class="hint">Voters rank up to this many options. If it exceeds the number of options, it’s capped when voting opens.</span>
           </label>
+          <div class="field">
+            <span>Ballot privacy</span>
+            <div class="method-options">
+              <label class="method-option">
+                <input type="radio" name="ballotPrivacy" value="anonymous" checked />
+                <div>
+                  <strong>Secret ballot</strong>
+                  <span>Rankings are never linked to names. Voters may sign in for your turnout list, but only you see who voted.</span>
+                </div>
+              </label>
+              <label class="method-option">
+                <input type="radio" name="ballotPrivacy" value="open" />
+                <div>
+                  <strong>Open ballot</strong>
+                  <span>On the record: voters must sign their ballot, and every name and ranking is published with the results.</span>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="field">
+            <span>Voter check</span>
+            <div class="method-options">
+              <label class="method-option">
+                <input type="radio" name="security" value="link" checked />
+                <div>
+                  <strong>Anyone with the link</strong>
+                  <span>Easiest to share. One ballot per browser, on the honor system.</span>
+                </div>
+              </label>
+              <label class="method-option">
+                <input type="radio" name="security" value="code" />
+                <div>
+                  <strong>One-time ballot codes</strong>
+                  <span>Secure: generate single-use codes on the admin page and hand them out — exactly one ballot per code, guaranteed.</span>
+                </div>
+              </label>
+            </div>
+          </div>
           <button type="submit" class="btn accent" style="width:100%">Create election</button>
           <span class="hint" style="display:block; text-align:center; margin-top:0.6rem;">You’ll get a private admin link — no account needed.</span>
         </div>

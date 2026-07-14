@@ -108,6 +108,8 @@ form.addEventListener('submit', async (event) => {
         numRanks: Number(ranksSelect.value),
         method: selectedMethod,
         numWinners: Number(seatsSelect.value),
+        ballotPrivacy: form.elements.namedItem('ballotPrivacy').value,
+        security: form.elements.namedItem('security').value,
         candidates,
       },
     });

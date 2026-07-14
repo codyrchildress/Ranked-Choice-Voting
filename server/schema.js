@@ -9,6 +9,8 @@ export const SCHEMA_STATEMENTS = [
     num_ranks INTEGER NOT NULL,
     method TEXT NOT NULL DEFAULT 'borda',
     num_winners INTEGER NOT NULL DEFAULT 1,
+    ballot_privacy TEXT NOT NULL DEFAULT 'anonymous',
+    security TEXT NOT NULL DEFAULT 'link',
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'open', 'closed')),
     created_at INTEGER NOT NULL,
     opened_at INTEGER,
@@ -29,6 +31,15 @@ export const SCHEMA_STATEMENTS = [
     created_at INTEGER NOT NULL
   )`,
   'CREATE INDEX IF NOT EXISTS idx_ballots_election ON ballots(election_id, created_at)',
+  `CREATE TABLE IF NOT EXISTS ballot_codes (
+    id TEXT PRIMARY KEY,
+    election_id TEXT NOT NULL REFERENCES elections(id) ON DELETE CASCADE,
+    code TEXT NOT NULL UNIQUE,
+    label TEXT,
+    created_at INTEGER NOT NULL,
+    used_at INTEGER
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_ballot_codes_election ON ballot_codes(election_id, created_at)',
 ];
 
 // Additive migrations for databases created before these columns existed.
@@ -37,6 +48,8 @@ export const SCHEMA_STATEMENTS = [
 export const MIGRATION_STATEMENTS = [
   "ALTER TABLE elections ADD COLUMN method TEXT NOT NULL DEFAULT 'borda'",
   'ALTER TABLE elections ADD COLUMN num_winners INTEGER NOT NULL DEFAULT 1',
+  "ALTER TABLE elections ADD COLUMN ballot_privacy TEXT NOT NULL DEFAULT 'anonymous'",
+  "ALTER TABLE elections ADD COLUMN security TEXT NOT NULL DEFAULT 'link'",
 ];
 
 export function isDuplicateColumnError(err) {

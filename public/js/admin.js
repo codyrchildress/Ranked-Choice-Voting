@@ -1,6 +1,6 @@
 import { METHODS, methodByKey } from './methods.js';
 import { api, copyText, el, plural, statusStamp, storage, timeString, toast } from './util.js';
-import { animateBars, renderResults } from './results-render.js';
+import { animateBars, renderResults, renderSignedBallots } from './results-render.js';
 
 const token = location.pathname.split('/')[2];
 const app = document.getElementById('app');
@@ -74,11 +74,21 @@ function render() {
   const right = el('div', { class: 'admin-col' });
 
   left.append(statusCard());
+  if (election.security === 'code') left.append(codesCard());
   if (election.status === 'draft') left.append(setupCard());
   if (data.results) left.append(tallyCard());
 
   right.append(shareCard());
-  if (ballotCount > 0) right.append(votersCard());
+  if (ballotCount > 0) {
+    right.append(
+      election.ballotPrivacy === 'open' && data.ballots
+        ? renderSignedBallots(data.ballots, data.candidates, {
+            title: 'Ballots',
+            sub: 'Open ballot — these names and rankings are published with the results.',
+          })
+        : votersCard(),
+    );
+  }
   right.append(dangerCard());
 
   app.append(el('div', { class: 'admin-grid rise', style: '--i:1' }, left, right));
@@ -208,6 +218,18 @@ function setupCard() {
     seatsSelect,
     el('span', { class: 'hint', text: 'STV elects this many options. Capped below the number of options when voting opens.' }),
   );
+  const privacySelect = el(
+    'select',
+    {},
+    el('option', { value: 'anonymous', selected: election.ballotPrivacy === 'anonymous' }, 'Secret ballot — rankings stay anonymous'),
+    el('option', { value: 'open', selected: election.ballotPrivacy === 'open' }, 'Open ballot — votes on the record'),
+  );
+  const securitySelect = el(
+    'select',
+    {},
+    el('option', { value: 'link', selected: election.security === 'link' }, 'Anyone with the link — one ballot per browser'),
+    el('option', { value: 'code', selected: election.security === 'code' }, 'One-time ballot codes — one ballot per code'),
+  );
   function updateMethodExtras() {
     methodHint.textContent = methodByKey[methodSelect.value].explain;
     seatsField.hidden = methodSelect.value !== 'stv';
@@ -261,6 +283,20 @@ function setupCard() {
       seatsField,
       el('label', { class: 'field' }, el('span', { text: 'Ranked choices per voter' }), ranksSelect),
       el(
+        'label',
+        { class: 'field' },
+        el('span', { text: 'Ballot privacy' }),
+        privacySelect,
+        el('span', { class: 'hint', text: 'Open ballots require voters to sign, and publish names with rankings in the results.' }),
+      ),
+      el(
+        'label',
+        { class: 'field' },
+        el('span', { text: 'Voter check' }),
+        securitySelect,
+        el('span', { class: 'hint', text: 'Ballot codes make voting invite-only: generate single-use codes and hand them out.' }),
+      ),
+      el(
         'div',
         { class: 'btn-row' },
         el(
@@ -277,6 +313,8 @@ function setupCard() {
                     numRanks: Number(ranksSelect.value),
                     method: methodSelect.value,
                     numWinners: Number(seatsSelect.value),
+                    ballotPrivacy: privacySelect.value,
+                    security: securitySelect.value,
                   },
                 });
                 data.election = res.election;
@@ -317,6 +355,121 @@ async function removeOption(candidate) {
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+function formatCode(code) {
+  return `${code.slice(0, 3)}-${code.slice(3, 6)}-${code.slice(6)}`;
+}
+
+function codesCard() {
+  const codes = data.codes ?? [];
+  const used = codes.filter((c) => c.usedAt).length;
+  const countInput = el('input', { type: 'number', min: '1', max: '100', value: '5' });
+  const namesArea = el('textarea', { rows: '3', placeholder: 'Priya\nMarcus\n…' });
+
+  async function generate(body) {
+    try {
+      const res = await api(`/api/admin/${token}/codes`, { method: 'POST', body });
+      data.codes = res.codes;
+      toast('Codes generated.');
+      render();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function revoke(codeId) {
+    try {
+      const res = await api(`/api/admin/${token}/codes/${codeId}`, { method: 'DELETE' });
+      data.codes = res.codes;
+      render();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return el(
+    'section',
+    { class: 'card' },
+    el('h2', { text: `Ballot codes (${used} of ${codes.length} used)` }),
+    el('p', {
+      class: 'card-sub',
+      text: 'Each code casts exactly one ballot. Hand them out as personal links or short codes — and keep this list to yourself.',
+    }),
+    el(
+      'form',
+      {
+        class: 'copy-row',
+        onsubmit: (e) => {
+          e.preventDefault();
+          generate({ count: Number(countInput.value) });
+        },
+      },
+      countInput,
+      el('button', { class: 'btn small', type: 'submit' }, 'Generate codes'),
+    ),
+    el(
+      'details',
+      { style: 'margin-top:0.6rem' },
+      el('summary', { class: 'hint', style: 'cursor:pointer', text: 'Or generate labeled codes — one name per line' }),
+      namesArea,
+      el(
+        'div',
+        { class: 'btn-row', style: 'margin-top:0.5rem' },
+        el(
+          'button',
+          {
+            class: 'btn small ghost',
+            type: 'button',
+            onclick: () => {
+              const labels = namesArea.value.split('\n').map((line) => line.trim()).filter(Boolean);
+              if (labels.length === 0) {
+                toast('Add at least one name.', 'error');
+                return;
+              }
+              generate({ labels });
+            },
+          },
+          'Generate labeled codes',
+        ),
+      ),
+    ),
+    codes.length === 0
+      ? el('p', { class: 'card-sub', style: 'margin-top:0.9rem', text: 'No codes yet — voters can’t get in until you make some.' })
+      : el(
+          'ul',
+          { class: 'code-list' },
+          codes.map((code) =>
+            el(
+              'li',
+              { class: code.usedAt ? 'used' : '' },
+              el('span', { class: 'code', text: formatCode(code.code) }),
+              code.label && el('span', { class: 'label', text: code.label }),
+              el('span', { class: 'meta', text: code.usedAt ? `used ${timeString(code.usedAt)}` : 'unused' }),
+              !code.usedAt &&
+                el(
+                  'button',
+                  {
+                    class: 'btn small ghost',
+                    type: 'button',
+                    onclick: async () => {
+                      const link = `${location.origin}/e/${data.election.id}?code=${formatCode(code.code)}`;
+                      if (await copyText(link)) toast('Voting link copied.');
+                      else toast('Copy failed — select the code instead.', 'error');
+                    },
+                  },
+                  'Copy link',
+                ),
+              !code.usedAt &&
+                el(
+                  'button',
+                  { class: 'icon-btn', 'aria-label': `Revoke code ${code.code}`, onclick: () => revoke(code.id) },
+                  '✕',
+                ),
+            ),
+          ),
+        ),
+  );
 }
 
 function shareCard() {

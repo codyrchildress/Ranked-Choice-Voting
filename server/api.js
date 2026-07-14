@@ -13,6 +13,16 @@ const LIMITS = {
   maxWinners: 20,
 };
 
+const PRIVACY_MODES = ['anonymous', 'open'];
+const SECURITY_MODES = ['link', 'code'];
+const MAX_CODES = 500;
+
+// Codes are entered by hand sometimes; be forgiving about case, dashes,
+// and spaces.
+function normalizeCode(raw) {
+  return typeof raw === 'string' ? raw.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+}
+
 export function createApiRouter({ db, rateLimits = {} }) {
   const store = createStore(db);
   const router = express.Router();
@@ -81,6 +91,16 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
     }
 
+    const ballotPrivacy = body.ballotPrivacy === undefined ? 'anonymous' : body.ballotPrivacy;
+    if (!PRIVACY_MODES.includes(ballotPrivacy)) {
+      return res.status(400).json({ error: 'Ballot privacy must be "anonymous" or "open".' });
+    }
+
+    const security = body.security === undefined ? 'link' : body.security;
+    if (!SECURITY_MODES.includes(security)) {
+      return res.status(400).json({ error: 'Voter check must be "link" or "code".' });
+    }
+
     const names = (Array.isArray(body.candidates) ? body.candidates : []).map(cleanLine).filter(Boolean);
     const problem = candidateListProblem(names);
     if (problem) return res.status(400).json({ error: problem });
@@ -92,6 +112,8 @@ export function createApiRouter({ db, rateLimits = {} }) {
       numRanks,
       method,
       numWinners: method === 'stv' ? numWinners : 1,
+      ballotPrivacy,
+      security,
       candidateNames: names,
       adminTokenHash: sha256(token),
     });
@@ -134,6 +156,11 @@ export function createApiRouter({ db, rateLimits = {} }) {
         numWinners: election.numWinners,
         seed: election.id,
       }),
+      // Open-ballot elections publish the signed ballots with the results.
+      ...(election.ballotPrivacy === 'open'
+        ? { ballots: await store.listSignedBallots(election.id) }
+        : {}),
+      ...(election.security === 'code' ? { turnout: await store.countCodes(election.id) } : {}),
     });
   });
 
@@ -147,8 +174,10 @@ export function createApiRouter({ db, rateLimits = {} }) {
       return res.status(409).json({ error: 'Voting has closed for this election.' });
     }
 
+    // Code-secured elections are gated by the one-time code instead of the
+    // browser cookie (two people may legitimately share a device).
     const cookies = parseCookies(req.headers.cookie);
-    if (cookies[votedCookie(election.id)]) {
+    if (election.security !== 'code' && cookies[votedCookie(election.id)]) {
       return res.status(409).json({ error: 'A ballot has already been cast from this browser.', alreadyVoted: true });
     }
 
@@ -165,6 +194,25 @@ export function createApiRouter({ db, rateLimits = {} }) {
     }
 
     const voterName = cleanLine(req.body?.voterName).slice(0, LIMITS.voterName) || null;
+    if (election.ballotPrivacy === 'open' && !voterName) {
+      return res.status(400).json({ error: 'This election uses open ballots — sign yours with your name to vote.' });
+    }
+
+    // Everything else is valid — now claim the one-time code, if required.
+    if (election.security === 'code') {
+      const code = normalizeCode(req.body?.code);
+      if (!code) {
+        return res.status(400).json({ error: 'This election requires a one-time ballot code.' });
+      }
+      const row = await store.findCode(election.id, code);
+      if (!row) {
+        return res.status(400).json({ error: 'That ballot code isn’t valid for this election.' });
+      }
+      if (!(await store.claimCode(row.id))) {
+        return res.status(409).json({ error: 'That ballot code has already been used.' });
+      }
+    }
+
     const ballotId = await store.insertBallot({ electionId: election.id, voterName, rankings });
     res.cookie(votedCookie(election.id), '1', {
       maxAge: 365 * 24 * 60 * 60 * 1000,
@@ -172,6 +220,21 @@ export function createApiRouter({ db, rateLimits = {} }) {
       path: '/',
     });
     res.status(201).json({ ok: true, ballotId });
+  });
+
+  // Lets a voter check their code before filling out the ballot. Knowing the
+  // code is the credential, so no other auth is needed.
+  router.get('/elections/:id/codes/:code', voteLimiter, async (req, res) => {
+    const election = await store.getElection(req.params.id);
+    if (!election) return res.status(404).json({ error: 'Election not found.' });
+    res.set('Cache-Control', 'no-store');
+    if (election.security !== 'code') {
+      return res.status(404).json({ error: 'This election does not use ballot codes.' });
+    }
+    const row = await store.findCode(election.id, normalizeCode(req.params.code));
+    if (!row) return res.json({ ok: false, reason: 'invalid' });
+    if (row.usedAt) return res.json({ ok: false, reason: 'used' });
+    res.json({ ok: true, label: row.label });
   });
 
   // ---- admin ----
@@ -186,7 +249,48 @@ export function createApiRouter({ db, rateLimits = {} }) {
       ballotCount: await store.countBallots(election.id),
       voters: await store.listVoters(election.id),
       results: await liveResults(election),
+      ...(election.ballotPrivacy === 'open'
+        ? { ballots: await store.listSignedBallots(election.id) }
+        : {}),
+      ...(election.security === 'code' ? { codes: await store.listCodes(election.id) } : {}),
     });
+  });
+
+  router.post('/admin/:token/codes', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (election.security !== 'code') {
+      return res.status(409).json({ error: 'This election is open to anyone with the link — switch it to ballot codes in setup first.' });
+    }
+
+    const rawLabels = Array.isArray(req.body?.labels) ? req.body.labels.map(cleanLine).filter(Boolean) : [];
+    const labels = rawLabels.map((label) => label.slice(0, LIMITS.voterName));
+    const count = req.body?.count;
+    if (labels.length === 0) {
+      if (!Number.isInteger(count) || count < 1 || count > 100) {
+        return res.status(400).json({ error: 'Generate between 1 and 100 codes at a time, or provide a list of names.' });
+      }
+    } else if (labels.length > 100) {
+      return res.status(400).json({ error: 'Generate at most 100 codes at a time.' });
+    }
+
+    const entries = labels.length > 0 ? labels : Array(count).fill(null);
+    const existing = await store.countCodes(election.id);
+    if (existing.total + entries.length > MAX_CODES) {
+      return res.status(409).json({ error: `Elections are capped at ${MAX_CODES} ballot codes.` });
+    }
+
+    await store.createCodes(election.id, entries);
+    res.status(201).json({ codes: await store.listCodes(election.id) });
+  });
+
+  router.delete('/admin/:token/codes/:codeId', async (req, res) => {
+    const election = await requireAdmin(req, res);
+    if (!election) return;
+    if (!(await store.revokeCode(election.id, req.params.codeId))) {
+      return res.status(409).json({ error: 'Only unused codes can be revoked.' });
+    }
+    res.json({ codes: await store.listCodes(election.id) });
   });
 
   router.patch('/admin/:token', async (req, res) => {
@@ -235,6 +339,24 @@ export function createApiRouter({ db, rateLimits = {} }) {
         return res.status(400).json({ error: `Seats to fill must be a whole number from 1 to ${LIMITS.maxWinners}.` });
       }
       election.numWinners = body.numWinners;
+    }
+    if (body.ballotPrivacy !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!PRIVACY_MODES.includes(body.ballotPrivacy)) {
+        return res.status(400).json({ error: 'Ballot privacy must be "anonymous" or "open".' });
+      }
+      election.ballotPrivacy = body.ballotPrivacy;
+    }
+    if (body.security !== undefined) {
+      if (election.status !== 'draft') {
+        return res.status(409).json({ error: 'Ballot rules can only change during setup.' });
+      }
+      if (!SECURITY_MODES.includes(body.security)) {
+        return res.status(400).json({ error: 'Voter check must be "link" or "code".' });
+      }
+      election.security = body.security;
     }
 
     await store.saveElection(election);

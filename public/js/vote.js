@@ -8,6 +8,9 @@ let data = null; // { election, candidates, ballotCount, hasVoted }
 let ranked = []; // candidate ids, best first
 let submittedNames = null; // recap of the ballot just cast
 let voterName = '';
+let ballotCode = new URLSearchParams(location.search).get('code') ?? '';
+let codeStatus = null; // pre-checked {ok, label?/reason?} for the code above
+let forceBallot = false; // "vote with a different code" on a shared device
 let pollTimer = null;
 let pendingFocus = null;
 let dragFrom = null;
@@ -22,6 +25,13 @@ async function init() {
     return;
   }
   document.title = `${data.election.title} · Runoff`;
+  if (data.election.security === 'code' && ballotCode) {
+    try {
+      codeStatus = await api(`/api/elections/${electionId}/codes/${encodeURIComponent(ballotCode)}`);
+    } catch {
+      codeStatus = null;
+    }
+  }
   render();
 }
 
@@ -37,7 +47,7 @@ function render() {
   const { status } = data.election;
   if (status === 'draft') renderNotOpen();
   else if (submittedNames) renderCast(true);
-  else if (data.hasVoted) renderCast(false);
+  else if (data.hasVoted && !forceBallot) renderCast(false);
   else if (status === 'closed') renderClosed();
   else renderBallot();
 
@@ -71,6 +81,8 @@ function renderHead() {
   const { election, ballotCount } = data;
   const methodName = methodByKey[election.method]?.name ?? election.method;
   const seats = election.method === 'stv' ? ` · electing ${election.numWinners}` : '';
+  const privacy = election.ballotPrivacy === 'open' ? 'open ballots' : 'secret ballot';
+  const security = election.security === 'code' ? ' · ballot codes required' : '';
   app.append(
     el(
       'div',
@@ -79,7 +91,7 @@ function renderHead() {
       election.description && el('p', { class: 'desc', text: election.description }),
       el('p', {
         class: 'count-line',
-        text: `Counted by ${methodName}${seats} · ${plural(ballotCount, 'ballot')} cast so far`,
+        text: `Counted by ${methodName}${seats} · ${privacy}${security} · ${plural(ballotCount, 'ballot')} cast so far`,
       }),
     ),
   );
@@ -119,27 +131,78 @@ function renderBallot() {
     ),
   );
 
+  const isOpen = election.ballotPrivacy === 'open';
+  const needsCode = election.security === 'code';
   const nameInput = el('input', {
     type: 'text',
     maxlength: '80',
-    placeholder: 'Anonymous',
+    placeholder: isOpen ? 'Your name' : 'Anonymous',
     value: voterName,
     oninput: (e) => {
       voterName = e.target.value;
+      updateSubmit();
     },
   });
 
-  const submitBtn = el(
-    'button',
-    { class: 'btn accent', type: 'button', disabled: ranked.length === 0, onclick: submit },
-    ranked.length === 0 ? 'Rank at least one option' : 'Cast my ballot',
-  );
+  const codeNote = el('span', { class: 'hint' });
+  const codeInput = el('input', {
+    type: 'text',
+    maxlength: '24',
+    placeholder: 'e.g. abc-def-ghj',
+    value: ballotCode,
+    oninput: (e) => {
+      ballotCode = e.target.value;
+      codeStatus = null;
+      renderCodeNote();
+      updateSubmit();
+    },
+  });
+  function renderCodeNote() {
+    if (codeStatus) {
+      codeNote.className = `hint ${codeStatus.ok ? 'code-ok' : 'code-bad'}`;
+      codeNote.textContent = codeStatus.ok
+        ? `✓ Code accepted${codeStatus.label ? ` — issued to ${codeStatus.label}` : ''}`
+        : codeStatus.reason === 'used'
+          ? '✗ This code has already been used.'
+          : '✗ This code isn’t valid for this election.';
+    } else {
+      codeNote.className = 'hint';
+      codeNote.textContent = 'One ballot per code. Yours came from the organizer — as a link or a short code.';
+    }
+  }
+  renderCodeNote();
+
+  const submitBtn = el('button', { class: 'btn accent', type: 'button', onclick: submit });
+  function updateSubmit() {
+    const missingCode = needsCode && !ballotCode.trim();
+    const unsigned = isOpen && !voterName.trim();
+    submitBtn.disabled = ranked.length === 0 || missingCode || unsigned;
+    submitBtn.textContent =
+      ranked.length === 0
+        ? 'Rank at least one option'
+        : missingCode
+          ? 'Enter your ballot code'
+          : unsigned
+            ? 'Sign your ballot to cast it'
+            : 'Cast my ballot';
+  }
+  updateSubmit();
 
   app.append(
     el(
       'section',
       { class: 'card ballot rise', style: '--i:1' },
-      el('div', { class: 'ballot-head' }, el('span', { class: 'official', text: 'Official ballot' })),
+      el(
+        'div',
+        { class: 'ballot-head' },
+        el('span', { class: 'official', text: 'Official ballot' }),
+        el('p', {
+          class: `ballot-privacy${isOpen ? ' open' : ''}`,
+          text: isOpen
+            ? 'Open ballot — votes are on the record'
+            : 'Secret ballot — rankings are anonymous',
+        }),
+      ),
       el(
         'div',
         { class: 'ballot-body' },
@@ -158,12 +221,25 @@ function renderBallot() {
         el(
           'div',
           { class: 'ballot-foot' },
+          needsCode &&
+            el(
+              'label',
+              { class: 'field' },
+              el('span', {}, 'Ballot code (required)'),
+              codeInput,
+              codeNote,
+            ),
           el(
             'label',
             { class: 'field' },
-            el('span', {}, 'Your name '),
+            el('span', {}, isOpen ? 'Your name (required)' : 'Your name '),
             nameInput,
-            el('span', { class: 'hint', text: 'Optional. Only the organizer sees who voted — rankings stay anonymous.' }),
+            el('span', {
+              class: 'hint',
+              text: isOpen
+                ? 'Open ballot: your name and your full ranking are published with the results.'
+                : 'Optional. Only the organizer sees who voted — rankings stay anonymous.',
+            }),
           ),
           submitBtn,
           el('span', { class: 'hint', text: 'One ballot per browser. Results stay sealed until the organizer closes voting.' }),
@@ -289,12 +365,17 @@ async function submit(event) {
   try {
     await api(`/api/elections/${electionId}/ballots`, {
       method: 'POST',
-      body: { rankings: ranked, voterName: voterName.trim() || undefined },
+      body: {
+        rankings: ranked,
+        voterName: voterName.trim() || undefined,
+        ...(data.election.security === 'code' ? { code: ballotCode } : {}),
+      },
     });
     submittedNames = ranked.map(nameOf);
     storage.markVoted(electionId, data.election.title);
     data.hasVoted = true;
     data.ballotCount += 1;
+    forceBallot = false;
     render();
   } catch (err) {
     toast(err.message, 'error');
@@ -322,6 +403,8 @@ function renderCast(withRecap) {
           ? 'Voting has ended — the results are public now.'
           : 'Results stay sealed until the organizer closes voting. Keep this page open and it will update on its own.',
       }),
+      data.election.ballotPrivacy === 'open' &&
+        el('p', { text: 'This was an open ballot — your name and ranking appear on the public record with the results.' }),
       withRecap && submittedNames
         ? el(
             'ol',
@@ -339,6 +422,25 @@ function renderCast(withRecap) {
           href: `/e/${electionId}/results`,
           text: closed ? 'See the results' : 'Results page',
         }),
+        !closed &&
+          data.election.security === 'code' &&
+          el(
+            'button',
+            {
+              class: 'btn ghost',
+              type: 'button',
+              onclick: () => {
+                forceBallot = true;
+                submittedNames = null;
+                ranked = [];
+                ballotCode = '';
+                codeStatus = null;
+                voterName = '';
+                render();
+              },
+            },
+            'Vote with a different code',
+          ),
       ),
     ),
   );
